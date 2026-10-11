@@ -57,11 +57,13 @@ def probe_video(path: str | Path, video_id: str | None = None, *, hash: bool = T
     if not rotation and (s.get("tags") or {}).get("rotate"):
         rotation = int(float(s["tags"]["rotate"])) % 360
     tb = _frac(s.get("time_base"))
+    br = s.get("bit_rate") or info.get("format", {}).get("bit_rate")
+    bit_rate = int(br) if str(br or "").isdigit() else None
     return VideoMetadata(
         video_id=video_id or p.stem.replace(" ", "_"), content_hash=file_hash(p) if hash else None,
         duration_s=duration, frame_count=frame_count, fps=Rational(num=fps.numerator, den=fps.denominator),
         timebase=Rational(num=tb.numerator, den=tb.denominator) if tb else None,
         is_vfr=bool(avg and real and avg != real), width=int(s["width"]), height=int(s["height"]),
-        rotation=rotation if rotation in (0, 90, 180, 270) else 0, codec=s.get("codec_name"), pix_fmt=s.get("pix_fmt"),
+        rotation=rotation if rotation in (0, 90, 180, 270) else 0, codec=s.get("codec_name"), pix_fmt=s.get("pix_fmt"), bit_rate=bit_rate,
         sources=[VideoSource(uri=str(p))], ingested_at=datetime.now(timezone.utc), extra=extra,
     )

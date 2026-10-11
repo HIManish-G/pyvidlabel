@@ -30,7 +30,7 @@ def _sha256(path: Path) -> str:
 
 def build(ds: Dataset, *, statuses: Sequence[str] = ("unreviewed", "approved"), origins: Sequence[str] | None = None,
           kinds: Sequence[str] | None = None, video_ids: Sequence[str] | None = None,
-          row_group_size: int = ROW_GROUP_SIZE, check: bool = True) -> tuple[Release, Path]:
+          view_ids: Sequence[str | None] | None = None, row_group_size: int = ROW_GROUP_SIZE, check: bool = True) -> tuple[Release, Path]:
     """Write compiled/<release_id>/{annotations.parquet, release.json}. Rejected annotations are excluded by default.
 
     The release id is the hash of the file contents: same data and filters give the same id, so a training run can
@@ -43,7 +43,7 @@ def build(ds: Dataset, *, statuses: Sequence[str] = ("unreviewed", "approved"), 
     ids = sorted(video_ids) if video_ids else sorted(ds.manifest.videos)
     parts = []
     for vid in ids:
-        t = ds.annotations(vid, kind=kinds, origin=origins, status=list(statuses))
+        t = ds.annotations(vid, kind=kinds, origin=origins, status=list(statuses), view_id=view_ids)
         if t.num_rows:
             parts.append(t.sort_by(SORT_KEYS))
     table = pa.concat_tables(parts) if parts else ARROW_SCHEMA.empty_table()
@@ -64,7 +64,8 @@ def build(ds: Dataset, *, statuses: Sequence[str] = ("unreviewed", "approved"), 
         n_rows=table.num_rows, n_videos=len(parts), row_group_size=row_group_size,
         files={"annotations.parquet": f"sha256:{digest}"},
         extra={"statuses": list(statuses), "origins": list(origins) if origins else None,
-               "kinds": list(kinds) if kinds else None, "video_ids": ids},
+               "kinds": list(kinds) if kinds else None, "video_ids": ids,
+               "view_ids": list(view_ids) if view_ids is not None else None},
     )
     if not (final / "release.json").exists():
         (final / "release.json").write_text(release.model_dump_json(indent=2))
@@ -110,20 +111,25 @@ class Compiled:
                 out.append(g)
         return out
 
-    def clip(self, video_id: str, start: int, end: int, columns: Sequence[str] | None = None) -> pa.Table:
-        """Annotations of one video overlapping frames [start, end] inclusive, reading only the row groups that can match."""
+    def clip(self, video_id: str, start: int, end: int, columns: Sequence[str] | None = None,
+             view_id: str | None = None) -> pa.Table:
+        """Annotations of one video overlapping frames [start, end] inclusive, reading only the row groups that can match.
+
+        `view_id` additionally keeps only rows labelled in that view."""
         groups = self.row_groups_for(video_id, start, end)
         self.last_row_groups_read = groups
         cols = list(columns) if columns else None
         read_cols = cols
         if cols is not None:  # need the filter columns even if not requested
-            read_cols = list(dict.fromkeys([*cols, "video_id", "start_frame", "end_frame"]))
+            read_cols = list(dict.fromkeys([*cols, "video_id", "start_frame", "end_frame", *(["view_id"] if view_id else [])]))
         if not groups:
             t = ARROW_SCHEMA.empty_table()
             return t.select(cols) if cols else t
         t = self._pf.read_row_groups(groups, columns=read_cols)
         keep = pc.and_(pc.equal(t.column("video_id"), video_id),
                        pc.and_(pc.less_equal(t.column("start_frame"), end), pc.greater_equal(t.column("end_frame"), start)))
+        if view_id is not None:
+            keep = pc.and_(keep, pc.fill_null(pc.equal(t.column("view_id"), view_id), False))
         t = t.filter(keep)
         return t.select(cols) if cols else t
 

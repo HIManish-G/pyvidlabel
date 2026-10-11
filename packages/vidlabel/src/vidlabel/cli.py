@@ -25,6 +25,14 @@ def info(path: Path):
     typer.echo(f"videos: {s['videos']}   views: {s['views']}   annotations: {s['annotations']}   vocab: {s['labels_in_vocab']}")
     for key in ("by_kind", "by_origin", "by_status"):
         typer.echo(f"{key[3:]:>8}: " + ", ".join(f"{k}={v}" for k, v in sorted(s[key].items())))
+    if s["by_view"]:
+        typer.echo("   views: " + ", ".join(f"{k}={v}" for k, v in sorted(s["by_view"].items())))
+    for v in s["video_details"]:
+        fps = f"{v['fps']:.3f}".rstrip("0").rstrip(".")
+        br = f"  {v['bit_rate'] / 1000:.0f} kb/s" if v["bit_rate"] else ""
+        note = "  (no annotations yet)" if not v["annotations"] else ""
+        typer.echo(f"  video {v['video_id']}: {v['width']}x{v['height']}  {fps} fps  {v['codec'] or '?'}{br}  "
+                   f"{v['frame_count']} frames  {v['annotations']} annotations{note}")
     top = sorted(s["by_label"].items(), key=lambda kv: -kv[1])[:10]
     if top:
         typer.echo("  labels: " + ", ".join(f"{k}={v}" for k, v in top))
@@ -56,6 +64,44 @@ def add_video(path: Path, video_file: Path, video_id: Optional[str] = None,
     from .probe import probe_video
     meta = Dataset.open(path).add_video(probe_video(video_file, video_id, hash=not no_hash))
     typer.echo(f"added {meta.video_id}: {meta.width}x{meta.height}, {meta.frame_count} frames")
+
+
+def _ints(text: str, n: int, what: str) -> list[int]:
+    try:
+        vals = [int(x) for x in text.split(",")]
+    except ValueError:
+        vals = []
+    if len(vals) != n:
+        raise typer.BadParameter(f"{what} must be {n} comma-separated integers")
+    return vals
+
+
+@app.command("add-labels")
+def add_labels(path: Path, labels: list[str]):
+    """Add labels to the shared vocabulary."""
+    added = Dataset.open(path).add_labels(labels)
+    typer.echo(f"added {len(added)} label(s): {', '.join(added) or '(all already existed)'}")
+
+
+@app.command("add-view")
+def add_view(path: Path, view_id: str, video_id: str,
+             region: Optional[str] = typer.Option(None, help="x,y,width,height in displayed pixels"),
+             frames: Optional[str] = typer.Option(None, help="first,last frame (inclusive)"),
+             output_size: Optional[str] = typer.Option(None, help="width,height the crop is resized to, if resized"),
+             labels: Optional[str] = typer.Option(None, help="comma-separated labels allowed in this view")):
+    """Define a crop / time range of a video."""
+    spec: dict = {"view_id": view_id, "video_id": video_id}
+    if region:
+        x, y, w, h = _ints(region, 4, "--region")
+        spec["region"] = {"x": x, "y": y, "width": w, "height": h}
+    if frames:
+        spec["frame_range"] = tuple(_ints(frames, 2, "--frames"))
+    if output_size:
+        spec["output_size"] = tuple(_ints(output_size, 2, "--output-size"))
+    if labels:
+        spec["allowed_labels"] = [l.strip() for l in labels.split(",") if l.strip()]
+    v = Dataset.open(path).add_view(spec)
+    typer.echo(f"added view {v.view_id} on {v.video_id}")
 
 
 @app.command("import-premiere")

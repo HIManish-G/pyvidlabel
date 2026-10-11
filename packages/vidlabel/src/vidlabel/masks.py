@@ -80,6 +80,26 @@ def decode(blob: bytes) -> np.ndarray:
     return out
 
 
+def place_in_frame(mask, x: int, y: int, frame_w: int, frame_h: int) -> np.ndarray:
+    """Paste a crop-sized mask into an empty full-frame canvas with its top-left at (x, y); parts outside are clipped."""
+    m = _as_bool2d(mask)
+    h, w = m.shape
+    out = np.zeros((frame_h, frame_w), dtype=bool)
+    x0, y0, x1, y1 = max(x, 0), max(y, 0), min(x + w, frame_w), min(y + h, frame_h)
+    if x1 > x0 and y1 > y0:
+        out[y0:y1, x0:x1] = m[y0 - y:y1 - y, x0 - x:x1 - x]
+    return out
+
+
+def resize_nearest(mask, h: int, w: int) -> np.ndarray:
+    """Nearest-neighbour resize of a boolean mask to (h, w)."""
+    m = _as_bool2d(mask)
+    H, W = m.shape
+    ys = np.minimum(((np.arange(h) + 0.5) * H / h).astype(int), H - 1)
+    xs = np.minimum(((np.arange(w) + 0.5) * W / w).astype(int), W - 1)
+    return m[np.ix_(ys, xs)]
+
+
 # ---- COCO RLE interop (for importing from / exporting to the COCO ecosystem) ----
 
 def from_coco_rle(rle: dict) -> np.ndarray:

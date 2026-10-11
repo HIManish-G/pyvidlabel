@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-SPEC_VERSION = "0.1.0"
+SPEC_VERSION = "0.2.0"
 
 _ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _HASH_RE = re.compile(r"^[a-z0-9]+:[0-9a-f]+$")
@@ -53,6 +53,7 @@ class VideoMetadata(_Strict):
     rotation: int = 0
     codec: str | None = None
     pix_fmt: str | None = None
+    bit_rate: int | None = Field(default=None, ge=0, description="Bits per second as reported by the container/stream.")
     sources: list[VideoSource] = Field(default_factory=list)
     ingested_at: datetime | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
@@ -87,21 +88,60 @@ class Region(_Strict):
 
 
 class View(_Strict):
-    """A named crop and/or time range of a video. No new video is made; annotations stay in source coordinates."""
+    """A named crop and/or time range of a video. No new video is made; annotations stay in source coordinates.
+
+    `region` is in the video's displayed orientation. If the crop is resized before it reaches a pipeline, give
+    `output_size` (width, height) so coordinates can be converted back. `allowed_labels` optionally limits which
+    labels may be used in this view (a ticker view might allow only ticker labels).
+    """
     view_id: str
     video_id: str
     name: str | None = None
     region: Region | None = None
+    output_size: tuple[int, int] | None = Field(
+        default=None, description="(width, height) the region is resized to when shown to a pipeline. Omit if not resized.")
     frame_range: tuple[int, int] | None = Field(default=None, description="Inclusive [first, last] frame.")
+    allowed_labels: list[str] | None = Field(default=None, description="If set, annotations in this view may only use these labels.")
     extra: dict[str, Any] = Field(default_factory=dict)
 
     _v_id = field_validator("view_id", "video_id")(_check_id)
 
     @model_validator(mode="after")
-    def _v_range(self) -> "View":
-        if self.frame_range is not None and self.frame_range[0] > self.frame_range[1]:
-            raise ValueError("frame_range must be [first, last] with first <= last")
+    def _v_checks(self) -> "View":
+        if self.frame_range is not None:
+            if self.frame_range[0] < 0 or self.frame_range[0] > self.frame_range[1]:
+                raise ValueError("frame_range must be [first, last] with 0 <= first <= last")
+        if self.output_size is not None:
+            if self.region is None:
+                raise ValueError("output_size needs a region")
+            if self.output_size[0] <= 0 or self.output_size[1] <= 0:
+                raise ValueError("output_size must be positive")
         return self
+
+    @property
+    def scale(self) -> tuple[float, float]:
+        """(x, y) factor from source pixels to view pixels (1, 1 if the crop is not resized)."""
+        if self.region is not None and self.output_size is not None:
+            return (self.output_size[0] / self.region.width, self.output_size[1] / self.region.height)
+        return (1.0, 1.0)
+
+    def to_source_box(self, box: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+        """Box in this view's pixels -> box in full source-video pixels."""
+        x0, y0, x1, y1 = (float(v) for v in box)
+        if self.region is None:
+            return (x0, y0, x1, y1)
+        sx, sy = self.scale
+        r = self.region
+        return (r.x + x0 / sx, r.y + y0 / sy, r.x + x1 / sx, r.y + y1 / sy)
+
+    def to_view_box(self, box: tuple[float, float, float, float]) -> tuple[float, float, float, float]:
+        """Box in full source-video pixels -> box in this view's pixels."""
+        x0, y0, x1, y1 = (float(v) for v in box)
+        if self.region is None:
+            return (x0, y0, x1, y1)
+        sx, sy = self.scale
+        r = self.region
+        return ((x0 - r.x) * sx, (y0 - r.y) * sy, (x1 - r.x) * sx, (y1 - r.y) * sy)
 
 
 class Label(_Strict):

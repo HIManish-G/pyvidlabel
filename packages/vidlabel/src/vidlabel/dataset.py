@@ -145,6 +145,12 @@ class Dataset:
             w, h = meta.display_size
             if view.region.x + view.region.width > w or view.region.y + view.region.height > h:
                 raise ValueError(f"view region extends outside the {w}x{h} video")
+        if view.frame_range and meta.frame_count and view.frame_range[1] >= meta.frame_count:
+            raise ValueError(f"view frame_range ends beyond the video ({meta.frame_count} frames)")
+        if view.allowed_labels is not None:
+            unknown = sorted(set(view.allowed_labels) - {l.name for l in self.vocab.labels})
+            if unknown:
+                raise ValueError(f"allowed_labels not in vocab: {unknown} (add them with add_labels first)")
         _write_json(self.path / "views" / f"{view.view_id}.json", view.model_dump_json(indent=2, exclude_none=True))
         if view.view_id not in m.views:
             m.views = sorted([*m.views, view.view_id])
@@ -160,6 +166,9 @@ class Dataset:
     def view_ids(self) -> list[str]:
         return list(self.manifest.views)
 
+    def _views_map(self) -> dict[str, View]:
+        return {v: self.view(v) for v in self.manifest.views}
+
     # ---- annotations: writing ----
     def _ann_path(self, video_id: str) -> Path:
         return self._vdir(video_id) / "annotations.parquet"
@@ -169,12 +178,19 @@ class Dataset:
         return pq.read_table(p) if p.exists() else empty_table()
 
     def add_annotations(self, rows: Iterable[Mapping[str, Any]], video_id: str | None = None, *,
-                        create_labels: bool = False, validate: bool = True) -> list[int]:
+                        create_labels: bool = False, validate: bool = True, coords: str = "source") -> list[int]:
         """Append annotations. Rows are dicts using the column names (plus `box=(x0,y0,x1,y1)` shorthand).
 
         A mask row may pass `mask=<bool ndarray HxW>`; it is encoded and its box filled in automatically.
         Returns the new annotation ids. Raises ValidationError (writing nothing) if any row is invalid.
+
+        coords="source" (default): boxes/masks are in full source-video pixels.
+        coords="view": boxes/masks are in the pixels of the row's `view_id` (the crop as the pipeline saw it) and are
+        converted to source coordinates here (offset, plus scaling if the view has `output_size`). Masks must be
+        boolean arrays the size of the view region or of its `output_size`.
         """
+        if coords not in ("source", "view"):
+            raise ValueError("coords must be 'source' or 'view'")
         groups: dict[str, list[Mapping]] = {}
         for r in rows:
             vid = r.get("video_id", video_id)
@@ -188,17 +204,19 @@ class Dataset:
         if create_labels:
             self.add_labels(sorted({r["label"] for g in groups.values() for r in g if "label" in r}))
         vocab_names = {l.name for l in self.vocab.labels}
-        view_ids = set(self.view_ids())
+        views_map = self._views_map()
 
         prepared = []
         for vid, group in groups.items():
             existing = self._existing(vid)
             used = set(existing.column("annotation_id").to_pylist())
+            if coords == "view":
+                group = self._rows_view_to_source(group, vid, views_map)
             new = _rows_to_table(group, vid, used)
             if validate:
                 meta = self.video(vid)
                 bad = errors(check_annotation_table(new, frame_count=meta.frame_count or None, size=meta.display_size,
-                                                    vocab_names=vocab_names, view_ids=view_ids))
+                                                    vocab_names=vocab_names, views=views_map, video_id=vid))
                 if bad:
                     raise ValidationError(bad)
             prepared.append((vid, existing, new))
@@ -208,6 +226,48 @@ class Dataset:
             write_parquet(table, self._ann_path(vid))
             out_ids.extend(new.column("annotation_id").to_pylist())
         return out_ids
+
+    def _rows_view_to_source(self, rows, vid: str, views_map: dict[str, View]) -> list[dict]:
+        out = []
+        W, H = self.video(vid).display_size
+        for i, raw in enumerate(rows):
+            r = dict(raw)
+            box = r.pop("box", None)
+            corner = [r.pop(k, None) for k in ("x0", "y0", "x1", "y1")]
+            if box is None and any(c is not None for c in corner):
+                if any(c is None for c in corner):
+                    raise ValueError(f"row {i}: give all of x0, y0, x1, y1 or use box=(x0, y0, x1, y1)")
+                box = tuple(corner)
+            mask = r.get("mask")
+            if box is None and mask is None:
+                out.append(r)  # nothing geometric to convert (e.g. a marker)
+                continue
+            vw_id = r.get("view_id")
+            if vw_id is None:
+                raise ValueError(f"row {i}: coords='view' needs a view_id on rows with a box or mask")
+            if vw_id not in views_map:
+                raise ValueError(f"row {i}: unknown view '{vw_id}'")
+            v = views_map[vw_id]
+            if v.video_id != vid:
+                raise ValueError(f"row {i}: view '{vw_id}' belongs to video '{v.video_id}', not '{vid}'")
+            if mask is not None:
+                if isinstance(mask, (bytes, bytearray, memoryview)):
+                    raise ValueError(f"row {i}: coords='view' cannot convert an already-encoded mask; pass a boolean array")
+                m = np.asarray(mask, dtype=bool)
+                if v.region is not None:
+                    rh, rw = v.region.height, v.region.width
+                    if m.shape != (rh, rw):
+                        if v.output_size and m.shape == (v.output_size[1], v.output_size[0]):
+                            m = _masks.resize_nearest(m, rh, rw)
+                        else:
+                            raise ValueError(f"row {i}: mask shape {m.shape} matches neither the view region ({rh}x{rw}) "
+                                             f"nor its output_size")
+                    m = _masks.place_in_frame(m, v.region.x, v.region.y, W, H)
+                r["mask"] = m  # box is derived from the mask when the row is written
+            else:
+                r["box"] = v.to_source_box(box)
+            out.append(r)
+        return out
 
     def delete_annotations(self, video_id: str, annotation_ids: Iterable[int]) -> int:
         t = self._existing(video_id)
@@ -243,7 +303,7 @@ class Dataset:
         meta = self.video(video_id)
         bad_issues = errors(check_annotation_table(t, frame_count=meta.frame_count or None, size=meta.display_size,
                                                    vocab_names={l.name for l in self.vocab.labels},
-                                                   view_ids=set(self.view_ids())))
+                                                   views=self._views_map(), video_id=video_id))
         if bad_issues:
             raise ValidationError(bad_issues)
         write_parquet(t.sort_by([("start_frame", "ascending"), ("annotation_id", "ascending")]), self._ann_path(video_id))
@@ -252,9 +312,13 @@ class Dataset:
     # ---- annotations: reading ----
     def annotations(self, video_id: str | None = None, *, kind: str | Sequence[str] | None = None,
                     label: str | Sequence[str] | None = None, origin: str | Sequence[str] | None = None,
-                    status: str | Sequence[str] | None = None, frames: tuple[int, int] | None = None,
-                    columns: Sequence[str] | None = None) -> pa.Table:
-        """Query annotations as a pyarrow Table. `frames=(a, b)` keeps annotations overlapping [a, b] inclusive."""
+                    status: str | Sequence[str] | None = None, view_id: str | Sequence[str | None] | None = None,
+                    frames: tuple[int, int] | None = None, columns: Sequence[str] | None = None) -> pa.Table:
+        """Query annotations as a pyarrow Table. `frames=(a, b)` keeps annotations overlapping [a, b] inclusive.
+
+        `view_id` keeps rows labelled in that view (or any of several). Include None in a list to also (or only)
+        get whole-frame rows that have no view, e.g. `view_id=[None]`.
+        """
         expr = None
 
         def add(e):
@@ -266,6 +330,13 @@ class Dataset:
                 continue
             vals = [val] if isinstance(val, str) else list(val)
             add(pads.field(name).isin(vals))
+        if view_id is not None:
+            vals = [view_id] if isinstance(view_id, str) else list(view_id)
+            named = [v for v in vals if v is not None]
+            e = pads.field("view_id").isin(named) if named else None
+            if None in vals:
+                e = pads.field("view_id").is_null() if e is None else (e | pads.field("view_id").is_null())
+            add(e)
         if frames is not None:
             add((pads.field("start_frame") <= frames[1]) & (pads.field("end_frame") >= frames[0]))
         cols = list(columns) if columns else None
@@ -277,11 +348,19 @@ class Dataset:
         return pa.concat_tables(tables) if tables else empty_table(cols)
 
     def stats(self) -> dict[str, Any]:
-        t = self.annotations(columns=["kind", "label", "origin", "status", "video_id"])
+        t = self.annotations(columns=["kind", "label", "origin", "status", "video_id", "view_id"])
         c = lambda n: dict(Counter(t.column(n).to_pylist()))
+        per_video = c("video_id")
+        details = []
+        for vid in self.manifest.videos:
+            m = self.video(vid)
+            details.append({"video_id": vid, "width": m.width, "height": m.height, "fps": round(m.fps.value, 3),
+                            "codec": m.codec, "bit_rate": m.bit_rate, "frame_count": m.frame_count,
+                            "annotations": per_video.get(vid, 0)})
+        by_view = {("(whole frame)" if k is None else k): v for k, v in c("view_id").items()}
         return {"videos": len(self.manifest.videos), "views": len(self.manifest.views), "annotations": t.num_rows,
                 "labels_in_vocab": len(self.vocab.labels), "by_kind": c("kind"), "by_label": c("label"),
-                "by_origin": c("origin"), "by_status": c("status")}
+                "by_origin": c("origin"), "by_status": c("status"), "by_view": by_view, "video_details": details}
 
     # ---- convenience ----
     def validate(self, deep: bool = False) -> list[Issue]:

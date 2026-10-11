@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from typing import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -63,9 +64,13 @@ def _not_in(table: pa.Table, name: str, allowed: list[str]) -> np.ndarray:
 
 def check_annotation_table(
     table: pa.Table, *, frame_count: int | None = None, size: tuple[int, int] | None = None,
-    vocab_names: set[str] | None = None, view_ids: set[str] | None = None, deep_masks: bool = False,
+    vocab_names: set[str] | None = None, views: Mapping[str, View] | None = None, video_id: str | None = None,
+    deep_masks: bool = False,
 ) -> list[Issue]:
-    """Check one annotation table. `size` is (width, height) in display orientation."""
+    """Check one annotation table. `size` is (width, height) in display orientation.
+
+    `views` maps view_id -> View; rows tagged with a view must lie inside it (region, frame range, allowed labels).
+    """
     issues: list[Issue] = []
     if table.num_rows == 0 and set(COLUMN_NAMES) <= set(table.column_names):
         return issues
@@ -136,10 +141,29 @@ def check_annotation_table(
     report("error", "bad_confidence", "confidence must be within 0..1", (conf < 0) | (conf > 1) | ~np.isfinite(conf))
     report("error", "bad_track_id", "track_id must be >= 0", _np(table, "track_id", fill=0) < 0)
 
-    if view_ids is not None:
-        col = table.column("view_id").combine_chunks()
-        bad = pc.and_(pc.is_valid(col), pc.invert(pc.is_in(col, value_set=pa.array(sorted(view_ids), type=pa.string()))))
-        report("error", "unknown_view", "view_id not found in views/", np.asarray(pc.fill_null(bad, False).to_numpy(zero_copy_only=False)))
+    if views is not None:
+        vcol = np.asarray(table.column("view_id").to_pylist(), dtype=object)
+        lcol = np.asarray(table.column("label").to_pylist(), dtype=object)
+        has_view = np.array([v is not None for v in vcol], dtype=bool)
+        report("error", "unknown_view", "view_id not found in views/", has_view & ~np.isin(vcol, list(views)))
+        eps = 0.5  # px tolerance for float rounding after scaling
+        for vid_, v in views.items():
+            sel = has_view & (vcol == vid_)
+            if not sel.any():
+                continue
+            if video_id is not None and v.video_id != video_id:
+                report("error", "view_wrong_video", f"view '{vid_}' belongs to video '{v.video_id}', not '{video_id}'", sel)
+            if v.region is not None:
+                r = v.region
+                outside = sel & geom & ~box_null & ((x0 < r.x - eps) | (y0 < r.y - eps) |
+                                                    (x1 > r.x + r.width + eps) | (y1 > r.y + r.height + eps))
+                report("error", "box_outside_view", f"box extends outside view '{vid_}' region", outside)
+            if v.frame_range is not None:
+                report("error", "frame_outside_view", f"frame outside view '{vid_}' frame_range {list(v.frame_range)}",
+                       sel & ((start < v.frame_range[0]) | (end > v.frame_range[1])))
+            if v.allowed_labels is not None:
+                report("error", "label_not_allowed_in_view", f"label not allowed in view '{vid_}' (allowed: {v.allowed_labels})",
+                       sel & ~np.isin(lcol, v.allowed_labels))
 
     extra = table.column("extra").to_pylist()
     bad_extra = np.zeros(len(extra), dtype=bool)
@@ -203,7 +227,7 @@ def validate_dataset(path: str | Path, deep: bool = False) -> list[Issue]:
     else:
         err("no_vocab", "vocab.json is missing")
 
-    view_ids: set[str] = set()
+    views_map: dict[str, View] = {}
     views_dir = root / "views"
     view_files = sorted(views_dir.glob("*.json")) if views_dir.exists() else []
     metas: dict[str, VideoMetadata] = {}
@@ -212,10 +236,14 @@ def validate_dataset(path: str | Path, deep: bool = False) -> list[Issue]:
             v = View.model_validate_json(vf.read_text())
             if v.view_id != vf.stem:
                 err("view_id_mismatch", f"views/{vf.name} contains view_id '{v.view_id}'")
-            view_ids.add(v.view_id)
+            views_map[v.view_id] = v
+            if v.allowed_labels is not None and vocab_names is not None:
+                unk = sorted(set(v.allowed_labels) - vocab_names)
+                if unk:
+                    err("view_labels", f"view '{v.view_id}' allows label(s) not in vocab.json: {unk}")
         except (PydanticValidationError, ValueError) as e:
             err("bad_view", f"views/{vf.name}: {e}")
-    if set(manifest.views) != view_ids:
+    if set(manifest.views) != set(views_map):
         warn("manifest_views", "manifest.json 'views' differs from files in views/")
 
     vdir = root / "videos"
@@ -248,7 +276,7 @@ def validate_dataset(path: str | Path, deep: bool = False) -> list[Issue]:
             err("bad_parquet", f"videos/{vid}/annotations.parquet unreadable: {e}")
             continue
         for i in check_annotation_table(table, frame_count=meta.frame_count or None, size=meta.display_size,
-                                        vocab_names=vocab_names, view_ids=view_ids, deep_masks=deep):
+                                        vocab_names=vocab_names, views=views_map, video_id=vid, deep_masks=deep):
             i.message = f"{vid}: {i.message}"
             issues.append(i)
         if "video_id" in table.column_names and table.num_rows:
