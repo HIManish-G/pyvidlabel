@@ -1,0 +1,4 @@
+# Workspace root: not a published package. Lets `pytest` run straight from a checkout without installing.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["packages/vidlabel-spec/src", "packages/vidlabel/src"]

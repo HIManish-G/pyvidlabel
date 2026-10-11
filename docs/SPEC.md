@@ -1,0 +1,41 @@
+# vidlabel format, spec 0.1.0
+
+Authoritative definitions: `packages/vidlabel-spec` (pydantic models; `vidlabel schema` prints JSON Schema).
+
+## Layout
+`manifest.json`, `vocab.json`, `videos/<video_id>/metadata.json`, `videos/<video_id>/annotations.parquet`,
+`views/<view_id>.json`, optional `compiled/<release_id>/{annotations.parquet,release.json}`, `compiled/LATEST`.
+IDs match `[A-Za-z0-9._-]+`.
+
+## Conventions
+- **Frames** are 0-indexed in display order. `end_frame` is inclusive. A point has `start_frame == end_frame`.
+- **Coordinates** are pixels, origin top-left, in the video's *displayed* orientation (after `rotation`), always in
+  full source-video coordinates, even when labelled in a view. `x1`/`y1` are exclusive.
+- **Video identity**: `content_hash` (`sha256:<hex>`) identifies the file; `sources` lists places it has been seen.
+  Paths are hints and can go stale; `Dataset.resolve_video_path` searches given roots by file name.
+- **Custom data** goes in `extra` (metadata objects, and a JSON-object string in the annotation table). Use your
+  own top-level key (e.g. `extra.premiere`). Core objects reject unknown fields.
+
+## Annotation table (one row per annotation, all kinds together)
+See `ANNOTATION_COLUMNS`. Kinds: `marker` (time only), `box` (single frame), `mask` (single frame, also has a box).
+`origin`: human | model | premiere | other. `status`: unreviewed | approved | rejected.
+Rules checked by the validator: required fields present, enums valid, `end >= start`, frames inside the video,
+label in `vocab.json`, boxes finite and non-empty, markers carry no geometry, masks carry bytes + codec,
+`view_id` exists, `confidence` in 0..1, `extra` is a JSON object, `annotation_id` unique (also across videos).
+`--deep` additionally decodes every mask, checks its frame size and that the box equals the mask's bounding box.
+
+Storage: Parquet, zstd, row groups of about 20,000 rows, statistics and page index on. Rows sorted by
+(`start_frame`, `annotation_id`) within a video file.
+
+## Mask codec `bitpack_zstd`
+Header (little endian): `u8 version=1; u32 frame_h, frame_w, crop_y0, crop_x0, crop_h, crop_w` then
+`zstd(np.packbits(crop, axis=-1))`. `crop_h = crop_w = 0` means an empty mask with no payload. Lossless.
+
+## Compiled releases
+`vidlabel build` merges per-video files into one table sorted by (`video_id`, `start_frame`, `annotation_id`),
+excluding `rejected` by default. `release_id = "r" + first 12 hex of the file's sha256`, so identical data and
+filters give the same id. Pin it in training configs. `Compiled.clip()` prunes row groups by statistics.
+
+## Editing rules (0.1)
+Each video has its own annotation file, so people working on different videos never conflict. Writes are atomic
+(temp file + rename) but not locked: one writer per video at a time. Ids are random 63-bit integers.
