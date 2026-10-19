@@ -104,6 +104,45 @@ def add_view(path: Path, view_id: str, video_id: str,
     typer.echo(f"added view {v.view_id} on {v.video_id}")
 
 
+def _resolve_video(ds: Dataset, video_id: str, video_path: Optional[Path], roots: list[Path]) -> Path:
+    p = video_path or ds.resolve_video_path(video_id, roots)
+    if p is None:
+        raise typer.BadParameter(f"cannot find the video for '{video_id}'; pass --video-path or --root")
+    return Path(p)
+
+
+@app.command()
+def preview(path: Path, video_id: str, out: Path = typer.Option(Path("preview_out"), help="Output folder."),
+            frames: Optional[str] = typer.Option(None, help="e.g. '0-100,250'. Default: a spread of annotated frames."),
+            every: int = typer.Option(1, help="With --frames, keep every Nth frame."),
+            view: Optional[str] = typer.Option(None, help="Show this view's crop and only its annotations."),
+            mp4: bool = typer.Option(False, help="Write one MP4 instead of PNG images."),
+            video_path: Optional[Path] = typer.Option(None, help="Video file, if the recorded path is stale."),
+            root: list[Path] = typer.Option([], help="Folder(s) to search for the video by file name.")):
+    """Draw the annotations on frames of the real video, to check they line up. Needs: pip install "vidlabel[video]"."""
+    from .preview import parse_frames, render_preview
+    ds = Dataset.open(path)
+    meta = ds.video(video_id)
+    chosen = parse_frames(frames, meta.frame_count)[::max(every, 1)] if frames else None
+    written = render_preview(ds, video_id, out, frames=chosen, video_path=_resolve_video(ds, video_id, video_path, root),
+                             view_id=view, mp4=mp4)
+    typer.echo(f"wrote {len(written)} file(s) to {out}")
+
+
+@app.command("check-video")
+def check_video_cmd(path: Path, video_id: str, video_path: Optional[Path] = typer.Option(None),
+                    root: list[Path] = typer.Option([], help="Folder(s) to search for the video by file name."),
+                    hash: bool = typer.Option(False, help="Also verify the content hash (reads the whole file).")):
+    """Check that the video file on disk matches the metadata registered for it."""
+    from .frames import check_video
+    ds = Dataset.open(path)
+    problems = check_video(_resolve_video(ds, video_id, video_path, root), ds.video(video_id), verify_hash=hash)
+    for p in problems:
+        typer.echo(f"[error] {p}")
+    typer.echo("ok: file matches the metadata" if not problems else f"{len(problems)} problem(s)")
+    raise typer.Exit(1 if problems else 0)
+
+
 @app.command()
 def schema(out: Optional[Path] = None):
     """Print (or write) the JSON Schema of the spec."""

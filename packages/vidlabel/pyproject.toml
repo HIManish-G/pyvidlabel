@@ -17,6 +17,9 @@ dependencies = [
     "typer>=0.12",
 ]
 
+[project.optional-dependencies]
+video = ["opencv-python-headless>=4.8"]
+
 [project.scripts]
 vidlabel = "vidlabel.cli:app"
 

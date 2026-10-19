@@ -1,6 +1,7 @@
 # Contributing
 
 - `pip install -e packages/vidlabel-spec -e packages/vidlabel pytest`, then `pytest`.
+- Frame/preview tests need OpenCV and ffmpeg (`pip install -e "packages/vidlabel[video]"`); they skip themselves if either is missing.
 - The spec (`vidlabel-spec`) is the contract. Changing a column or metadata field means bumping `SPEC_VERSION`,
   updating `docs/SPEC.md`, and adding a test. Custom data never needs a spec change: put it in `extra`.
 - New mask codecs: add a value to `MaskCodec`, a module next to `masks.py`, and a lossless round-trip test.

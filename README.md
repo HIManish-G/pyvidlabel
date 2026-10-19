@@ -48,6 +48,18 @@ ds.annotations("clip", view_id="lower_strip")
 ds.build(view_ids=["lower_strip"])        # a release for just that view
 ```
 
+## Check your annotations against the real video
+
+```bash
+pip install "vidlabel[video]"                       # adds OpenCV
+vidlabel check-video my_dataset clip                # file on disk matches the metadata? (size, frame count, --hash)
+vidlabel preview my_dataset clip --out preview_out  # draws boxes, masks and markers on real frames
+vidlabel preview my_dataset clip --view lower_strip # a view's crop, with only that view's annotations
+```
+
+From Python: `vidlabel.frames.read_frames(path, [0, 10, 250], meta)` returns frame-accurate RGB frames in displayed
+orientation, optionally cropped to a view.
+
 ## Masks
 
 Stored losslessly as: crop to the mask's bounding box, bit-pack rows, zstd (`bitpack_zstd`). In benchmarks this was
