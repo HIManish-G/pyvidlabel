@@ -104,18 +104,6 @@ def add_view(path: Path, view_id: str, video_id: str,
     typer.echo(f"added view {v.view_id} on {v.video_id}")
 
 
-@app.command("import-premiere")
-def import_premiere(path: Path, video_id: str, markers_csv: Path,
-                    start_tc: str = "00:00:00:00", label_from: str = "name", author: Optional[str] = None,
-                    default_label: Optional[str] = None,
-                    create_labels: bool = typer.Option(False, help="Add unseen labels to vocab.json.")):
-    """Import a Premiere Pro marker export (format not yet verified against a real file)."""
-    from .importers.premiere import import_markers
-    ids = import_markers(Dataset.open(path), video_id, markers_csv, start_tc=start_tc, label_from=label_from,
-                         author=author, default_label=default_label, create_labels=create_labels)
-    typer.echo(f"imported {len(ids)} markers")
-
-
 @app.command()
 def schema(out: Optional[Path] = None):
     """Print (or write) the JSON Schema of the spec."""

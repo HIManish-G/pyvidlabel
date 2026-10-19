@@ -8,15 +8,15 @@ from vidlabel import Compiled, Dataset, VideoMetadata
 ds = Dataset.create(sys.argv[1] if len(sys.argv) > 1 else "sample_ds", exist_ok=True)
 ds.add_video(VideoMetadata(video_id="clip1", frame_count=300, fps={"num": 30, "den": 1}, width=320, height=240,
                            sources=[{"uri": "/path/to/clip1.mp4"}]), exist_ok=True)
-ds.add_labels(["goal", "player", "ball"])
+ds.add_labels(["scene_change", "person", "car"])
 
 mask = np.zeros((240, 320), bool)
 mask[100:140, 150:190] = True
 ds.add_annotations([
-    {"kind": "marker", "label": "goal", "start_frame": 120, "end_frame": 150, "origin": "premiere"},
-    {"kind": "box", "label": "player", "start_frame": 10, "box": (20, 30, 80, 150), "track_id": 1, "origin": "model",
+    {"kind": "marker", "label": "scene_change", "start_frame": 120, "end_frame": 150, "origin": "human"},
+    {"kind": "box", "label": "person", "start_frame": 10, "box": (20, 30, 80, 150), "track_id": 1, "origin": "model",
      "tool": "detector", "tool_version": "1.0", "confidence": 0.93},
-    {"kind": "mask", "label": "ball", "start_frame": 10, "mask": mask, "track_id": 2, "origin": "human", "author": "me",
+    {"kind": "mask", "label": "car", "start_frame": 10, "mask": mask, "track_id": 2, "origin": "human", "author": "me",
      "status": "approved"},
 ], "clip1")
 

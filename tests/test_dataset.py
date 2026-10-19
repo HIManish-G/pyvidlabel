@@ -17,7 +17,7 @@ def test_create_open(tmp_path):
 
 def test_unified_rows_roundtrip(ds):
     ds.add_annotations([
-        {"kind": "marker", "label": "cut", "start_frame": 10, "end_frame": 40, "origin": "premiere", "extra": {"premiere": {"name": "x"}}},
+        {"kind": "marker", "label": "cut", "start_frame": 10, "end_frame": 40, "origin": "imported", "tool": "some-converter", "extra": {"mytool": {"name": "x"}}},
         {"kind": "box", "label": "person", "start_frame": 5, "box": (1, 2, 20, 30), "track_id": 0, "origin": "model",
          "tool": "yolo", "tool_version": "8", "confidence": 0.9},
         {"kind": "mask", "label": "car", "start_frame": 7, "mask": blob_mask(), "origin": "human", "author": "a", "status": "approved"},
@@ -30,7 +30,7 @@ def test_unified_rows_roundtrip(ds):
     m = ds.annotations("vid1", kind="mask").to_pylist()[0]
     assert m["mask_codec"] == "bitpack_zstd"
     assert (m["x0"], m["y0"]) == masks.bbox(m["mask"])[:2]  # box derived from mask
-    assert json.loads(ds.annotations("vid1", kind="marker").to_pylist()[0]["extra"])["premiere"]["name"] == "x"
+    assert json.loads(ds.annotations("vid1", kind="marker").to_pylist()[0]["extra"])["mytool"]["name"] == "x"
     assert ds.validate(deep=True) == []
 
 

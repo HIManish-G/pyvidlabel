@@ -19,7 +19,7 @@ class Kind(str, Enum):
 class Origin(str, Enum):
     HUMAN = "human"
     MODEL = "model"
-    PREMIERE = "premiere"
+    IMPORTED = "imported"  # converted from another tool or dataset; name it in `tool`
     OTHER = "other"
 
 
@@ -60,14 +60,14 @@ ANNOTATION_COLUMNS: tuple[ColumnSpec, ...] = (
     ColumnSpec(name="mask_codec", dtype="dict_string", nullable=True, description="How `mask` is encoded."),
     ColumnSpec(name="view_id", dtype="dict_string", nullable=True,
                description="Optional: the view (crop / focused version) this was labelled in. Geometry is always in source-video coordinates."),
-    ColumnSpec(name="origin", dtype="dict_string", nullable=False, description="human | model | premiere | other"),
+    ColumnSpec(name="origin", dtype="dict_string", nullable=False, description="human | model | imported | other"),
     ColumnSpec(name="tool", dtype="dict_string", nullable=True, description="Tool or model name that produced it."),
     ColumnSpec(name="tool_version", dtype="dict_string", nullable=True, description="Tool or model version."),
     ColumnSpec(name="author", dtype="dict_string", nullable=True, description="Person responsible, if any."),
     ColumnSpec(name="confidence", dtype="float32", nullable=True, description="0..1, usually only for model output."),
     ColumnSpec(name="status", dtype="dict_string", nullable=False, description="unreviewed | approved | rejected"),
     ColumnSpec(name="extra", dtype="string", nullable=True,
-               description="Optional JSON object (as text) for anything custom. Use your own top-level key, e.g. extra.premiere."),
+               description="Optional JSON object (as text) for anything custom. Use your own top-level key, e.g. extra.mytool."),
 )
 
 COLUMN_NAMES: tuple[str, ...] = tuple(c.name for c in ANNOTATION_COLUMNS)

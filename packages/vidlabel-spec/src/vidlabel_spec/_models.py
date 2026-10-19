@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-SPEC_VERSION = "0.2.0"
+SPEC_VERSION = "0.3.0"
 
 _ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _HASH_RE = re.compile(r"^[a-z0-9]+:[0-9a-f]+$")
@@ -92,7 +92,7 @@ class View(_Strict):
 
     `region` is in the video's displayed orientation. If the crop is resized before it reaches a pipeline, give
     `output_size` (width, height) so coordinates can be converted back. `allowed_labels` optionally limits which
-    labels may be used in this view (a ticker view might allow only ticker labels).
+    labels may be used in this view (e.g. a caption strip that only allows caption labels).
     """
     view_id: str
     video_id: str

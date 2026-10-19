@@ -1,4 +1,4 @@
-# vidlabel format, spec 0.2.0
+# vidlabel format, spec 0.3.0
 
 Authoritative definitions: `packages/vidlabel-spec` (pydantic models; `vidlabel schema` prints JSON Schema).
 
@@ -14,14 +14,14 @@ IDs match `[A-Za-z0-9._-]+`.
 - **Video identity**: `content_hash` (`sha256:<hex>`) identifies the file; `sources` lists places it has been seen.
   Paths are hints and can go stale; `Dataset.resolve_video_path` searches given roots by file name.
 - **Custom data** goes in `extra` (metadata objects, and a JSON-object string in the annotation table). Use your
-  own top-level key (e.g. `extra.premiere`). Core objects reject unknown fields.
+  own top-level key (e.g. `extra.mytool`). Core objects reject unknown fields.
 
 ## Views (crops and time ranges)
 A view is a named region and/or frame range of one video, stored in `views/<view_id>.json`:
 `region` (x, y, width, height in displayed pixels), `output_size` (width, height the crop is resized to before a
 pipeline sees it; omit if not resized), `frame_range` ([first, last], inclusive), `allowed_labels` (optional list
-from `vocab.json`). Several views of one video may coexist and overlap (e.g. a play area and a score ticker, each
-with its own pipeline). No video file is created.
+from `vocab.json`). Several views of one video may coexist and overlap (e.g. a main area and a caption strip, each
+processed by its own model). No video file is created.
 
 Annotations are **always stored in full source-video coordinates**. A row labelled in a view carries that `view_id`.
 To convert from the crop a pipeline saw: `source = region.xy + view_pixels / scale`, where
@@ -30,11 +30,11 @@ To convert from the crop a pipeline saw: `source = region.xy + view_pixels / sca
 full-frame canvas). The validator rejects rows whose box lies outside the view's region, whose frames lie outside its
 `frame_range`, whose label is not in its `allowed_labels`, or whose view belongs to a different video.
 Rows with no `view_id` refer to the whole frame. Filter with `ds.annotations(view_id=...)` (`[None]` = whole-frame rows),
-`Compiled.clip(..., view_id=...)`, and `ds.build(view_ids=[...])` for a per-pipeline release.
+`Compiled.clip(..., view_id=...)`, and `ds.build(view_ids=[...])` for a per-view release.
 
 ## Annotation table (one row per annotation, all kinds together)
 See `ANNOTATION_COLUMNS`. Kinds: `marker` (time only), `box` (single frame), `mask` (single frame, also has a box).
-`origin`: human | model | premiere | other. `status`: unreviewed | approved | rejected.
+`origin`: human | model | imported | other (for `imported`, name the source tool in `tool`). `status`: unreviewed | approved | rejected.
 Rules checked by the validator: required fields present, enums valid, `end >= start`, frames inside the video,
 label in `vocab.json`, boxes finite and non-empty, markers carry no geometry, masks carry bytes + codec,
 `view_id` exists, `confidence` in 0..1, `extra` is a JSON object, `annotation_id` unique (also across videos).

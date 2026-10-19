@@ -7,7 +7,6 @@ from typer.testing import CliRunner
 from conftest import blob_mask, make_meta
 from vidlabel import Compiled, Dataset, ValidationError
 from vidlabel.cli import app
-from vidlabel.importers.premiere import import_markers, timecode_to_frames
 from vidlabel_spec import json_schema, VideoMetadata
 
 
@@ -63,40 +62,6 @@ def test_validate_detects_tampering(ds):
     assert ds.validate(deep=True) == []
     (ds.path / "videos" / "vid2" / "metadata.json").write_text("{not json")
     assert "bad_metadata" in {i.code for i in ds.validate()}
-
-
-@pytest.mark.parametrize("tc,fps,expect", [
-    ("00:00:01:00", (24, 1), 24), ("00:01:00:00", (25, 1), 1500), ("01:00:00:00", (30, 1), 108000),
-    ("00:01:00;02", (30000, 1001), 1800), ("00:10:00;00", (30000, 1001), 17982), ("00:00:00;29", (30000, 1001), 29),
-    ("01:00:00;00", (30000, 1001), 107892), ("00:01:00;04", (60000, 1001), 3600),
-])
-def test_timecode(tc, fps, expect):
-    assert timecode_to_frames(tc, *fps) == expect
-
-
-def test_timecode_errors():
-    with pytest.raises(ValueError):
-        timecode_to_frames("00:00:01:30", 30, 1)
-    with pytest.raises(ValueError):
-        timecode_to_frames("00:00:01;00", 25, 1)
-    with pytest.raises(ValueError):
-        timecode_to_frames("garbage", 30, 1)
-
-
-def test_premiere_import(tmp_path):
-    d = Dataset.create(tmp_path / "p")
-    d.add_video(make_meta("v", frames=5000, fps=(25, 1)))
-    csvp = tmp_path / "m.csv"
-    csvp.write_text("Marker Name\tDescription\tIn\tOut\tDuration\tMarker Type\n"
-                    "goal\tnice\t01:00:02:00\t01:00:02:00\t00:00:00:00\tComment\n"
-                    "rally\t\t01:00:10:00\t01:00:12:00\t00:00:02:00\tComment\n")
-    ids = import_markers(d, "v", csvp, start_tc="01:00:00:00", create_labels=True)
-    assert len(ids) == 2
-    rows = {r["label"]: r for r in d.annotations("v").to_pylist()}
-    assert (rows["goal"]["start_frame"], rows["goal"]["end_frame"]) == (50, 50)
-    assert (rows["rally"]["start_frame"], rows["rally"]["end_frame"]) == (250, 299)
-    assert rows["rally"]["origin"] == "premiere"
-    assert json.loads(rows["goal"]["extra"])["premiere"]["description"] == "nice"
 
 
 def test_cli_smoke(tmp_path):

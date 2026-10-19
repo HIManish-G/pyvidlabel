@@ -1,7 +1,7 @@
 # vidlabel (working name)
 
 An open, directory-based format and Python library for **video annotation data**: time markers and spans, bounding
-boxes, masks, tracks, labels. Everything lives in one annotation table; *who made it* (Premiere, a model, a person)
+boxes, masks, tracks, labels. Everything lives in one annotation table; *who made it* (a person, a model, an imported file)
 is a column, not a separate structure. Video pixels are **not** stored; datasets point at your videos.
 
 Inspired by Zarr / GEFF: a tiny spec, a validator, an `extra` field for custom data, and a spec package separate
@@ -29,23 +29,23 @@ vidlabel info /tmp/sample ; vidlabel validate /tmp/sample --deep ; vidlabel buil
 ```python
 from vidlabel import Dataset, Compiled
 ds = Dataset.open("my_dataset")
-ds.add_annotations([{"kind": "box", "label": "player", "start_frame": 10, "box": (20, 30, 80, 150),
+ds.add_annotations([{"kind": "box", "label": "person", "start_frame": 10, "box": (20, 30, 80, 150),
                      "origin": "model", "tool": "detector"}], "clip1")
 ds.annotations("clip1", kind="box", frames=(0, 100))          # pyarrow Table
 release, path = ds.build()                                    # pin release.release_id in your training config
 Compiled(path).clip("clip1", 100, 130)                        # fast: only matching row groups are read
 ```
 
-## Views: several pipelines on one video
+## Views: several crops of one video
 
 ```python
-ds.add_view({"view_id": "ticker", "video_id": "clip", "region": {"x": 0, "y": 620, "width": 1280, "height": 100},
-             "allowed_labels": ["ticker_score"]})
-# boxes straight from the ticker pipeline, in the crop's own pixels; stored in full-frame coordinates
-ds.add_annotations([{"kind": "box", "label": "ticker_score", "start_frame": 5, "box": (40, 30, 200, 70),
-                     "origin": "model", "view_id": "ticker"}], "clip", coords="view")
-ds.annotations("clip", view_id="ticker")
-ds.build(view_ids=["ticker"])            # a release for just that pipeline
+ds.add_view({"view_id": "lower_strip", "video_id": "clip",
+             "region": {"x": 0, "y": 620, "width": 1280, "height": 100}, "allowed_labels": ["caption_text"]})
+# boxes straight from a model that only saw the strip, in the crop's own pixels; stored in full-frame coordinates
+ds.add_annotations([{"kind": "box", "label": "caption_text", "start_frame": 5, "box": (40, 30, 200, 70),
+                     "origin": "model", "view_id": "lower_strip"}], "clip", coords="view")
+ds.annotations("clip", view_id="lower_strip")
+ds.build(view_ids=["lower_strip"])        # a release for just that view
 ```
 
 ## Masks
@@ -57,8 +57,8 @@ Stored losslessly as: crop to the mask's bounding box, bit-pack rows, zstd (`bit
 
 ## Status
 
-v0.1, early. Tested: spec, mask codec, read/write/validate, views (coordinate conversion, inside-view checks), build + clip reads, timecode maths, CLI.
-**Not yet verified:** the Premiere CSV column layout (needs a real export), Parquet-vs-Lance speed at scale,
+v0.1, early. Tested: spec, mask codec, read/write/validate, views (coordinate conversion, inside-view checks), build + clip reads, CLI.
+**Not yet verified:** Parquet-vs-Lance speed at scale,
 multi-writer conflicts (one writer per video at a time for now), PyTorch loader.
 
 See `docs/SPEC.md` for the format. MIT licensed.

@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "vidlabel"
-version = "0.2.0"
+version = "0.3.0"
 description = "Open, directory-based format and Python library for video annotations: time markers, boxes, masks, tracks."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
 dependencies = [
-    "vidlabel-spec==0.2.0",
+    "vidlabel-spec==0.3.0",
     "numpy>=1.24",
     "pyarrow>=14",
     "zstandard>=0.22",
