@@ -5,6 +5,7 @@ annotation is a column (`origin`, `tool`, ...), never a separate file or folder.
 """
 from __future__ import annotations
 
+import re
 from enum import Enum
 
 from pydantic import BaseModel, ConfigDict
@@ -21,6 +22,15 @@ class Origin(str, Enum):
     MODEL = "model"
     IMPORTED = "imported"  # converted from another tool or dataset; name it in `tool`
     OTHER = "other"
+
+
+_CUSTOM_ORIGIN_RE = re.compile(r"^x-[a-z0-9][a-z0-9._-]{0,62}$")
+
+
+def is_valid_origin(value) -> bool:
+    """True for the built-in origins, or a custom one: 'x-' + lowercase letters, digits, '.', '_' or '-'."""
+    v = value.value if isinstance(value, Enum) else value
+    return isinstance(v, str) and (v in {o.value for o in Origin} or bool(_CUSTOM_ORIGIN_RE.match(v)))
 
 
 class Status(str, Enum):
@@ -60,7 +70,7 @@ ANNOTATION_COLUMNS: tuple[ColumnSpec, ...] = (
     ColumnSpec(name="mask_codec", dtype="dict_string", nullable=True, description="How `mask` is encoded."),
     ColumnSpec(name="view_id", dtype="dict_string", nullable=True,
                description="Optional: the view (crop / focused version) this was labelled in. Geometry is always in source-video coordinates."),
-    ColumnSpec(name="origin", dtype="dict_string", nullable=False, description="human | model | imported | other"),
+    ColumnSpec(name="origin", dtype="dict_string", nullable=False, description="human | model | imported | other, or a custom value starting with 'x-' (e.g. x-crowd)"),
     ColumnSpec(name="tool", dtype="dict_string", nullable=True, description="Tool or model name that produced it."),
     ColumnSpec(name="tool_version", dtype="dict_string", nullable=True, description="Tool or model version."),
     ColumnSpec(name="author", dtype="dict_string", nullable=True, description="Person responsible, if any."),

@@ -114,3 +114,38 @@ def test_stats(ds):
     ds.add_annotations([{"kind": "marker", "label": "cut", "start_frame": 1, "origin": "human"}], "vid1")
     s = ds.stats()
     assert s["annotations"] == 1 and s["by_origin"] == {"human": 1}
+
+
+def test_custom_origin(ds):
+    ids = ds.add_annotations([{"kind": "marker", "label": "cut", "start_frame": 1, "origin": "x-crowd", "tool": "batch-7"}], "vid1")
+    assert ds.annotations("vid1", origin="x-crowd").num_rows == 1
+    assert ds.validate() == []
+    assert ds.update_annotations("vid1", ids, origin="x-simulation.v2") == 1
+    assert ds.annotations("vid1", origin="x-simulation.v2").num_rows == 1
+    assert ds.update_annotations("vid1", ids, origin="human") == 1
+    assert ds.annotations("vid1", origin="x-simulation.v2").num_rows == 0
+    ds.build()  # custom origins survive a build
+
+
+@pytest.mark.parametrize("bad", ["Human", "manual", "", "x-", "x-Crowd", "x_crowd", "x- crowd", "x-" + "a" * 70])
+def test_bad_origins_rejected(ds, bad):
+    with pytest.raises(ValueError):
+        ds.add_annotations([{"kind": "marker", "label": "cut", "start_frame": 1, "origin": bad}], "vid1")
+    ids = ds.add_annotations([{"kind": "marker", "label": "cut", "start_frame": 1, "origin": "human"}], "vid1")
+    with pytest.raises(ValueError):
+        ds.update_annotations("vid1", ids, origin=bad)
+    assert ds.annotations("vid1").num_rows == 1
+
+
+def test_validator_catches_bad_origin_written_directly(ds):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from vidlabel._arrow import write_parquet
+
+    ds.add_annotations([{"kind": "marker", "label": "cut", "start_frame": 1, "origin": "human"}], "vid1")
+    p = ds.path / "videos" / "vid1" / "annotations.parquet"
+    t = pq.read_table(p)
+    t = t.set_column(t.schema.get_field_index("origin"), t.schema.field("origin"), pa.array(["Human"]))
+    write_parquet(t, p)
+    assert "bad_origin" in {i.code for i in ds.validate()}

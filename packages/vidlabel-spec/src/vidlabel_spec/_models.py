@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-SPEC_VERSION = "0.3.0"
+SPEC_VERSION = "0.4.0"
 
 _ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _HASH_RE = re.compile(r"^[a-z0-9]+:[0-9a-f]+$")

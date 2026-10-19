@@ -12,7 +12,7 @@ import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from pydantic import ValidationError as PydanticValidationError
 from vidlabel_spec import (COLUMN_NAMES, REQUIRED_COLUMNS, SPEC_VERSION, Kind, Manifest, MaskCodec, Origin, Status,
-                           VideoMetadata, View, Vocab)
+                           VideoMetadata, View, Vocab, is_valid_origin)
 
 from . import masks
 
@@ -92,7 +92,8 @@ def check_annotation_table(
         report("error", "null_required", f"required column '{name}' has nulls", _nulls(table, name))
 
     report("error", "bad_kind", f"kind must be one of {[k.value for k in Kind]}", _not_in(table, "kind", [k.value for k in Kind]))
-    report("error", "bad_origin", f"origin must be one of {[o.value for o in Origin]}", _not_in(table, "origin", [o.value for o in Origin]))
+    bad_origin = np.array([o is not None and not is_valid_origin(o) for o in table.column("origin").to_pylist()], dtype=bool)
+    report("error", "bad_origin", f"origin must be one of {[o.value for o in Origin]} or a custom value like 'x-crowd'", bad_origin)
     report("error", "bad_status", f"status must be one of {[s.value for s in Status]}", _not_in(table, "status", [s.value for s in Status]))
 
     uniq, counts = np.unique(ids, return_counts=True)

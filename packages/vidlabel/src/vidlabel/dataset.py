@@ -13,7 +13,8 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.dataset as pads
 import pyarrow.parquet as pq
-from vidlabel_spec import (COLUMN_NAMES, SPEC_VERSION, Kind, Label, Manifest, Origin, Status, VideoMetadata, View, Vocab)
+from vidlabel_spec import (COLUMN_NAMES, SPEC_VERSION, Kind, Label, Manifest, Origin, Status, VideoMetadata, View, Vocab,
+                           is_valid_origin)
 
 from . import masks as _masks
 from ._arrow import ARROW_SCHEMA, empty_table, write_parquet
@@ -35,6 +36,13 @@ def _enum_value(v, enum_cls, field: str) -> str:
         return enum_cls(v.value if hasattr(v, "value") else v).value
     except ValueError:
         raise ValueError(f"{field}={v!r}; must be one of {[e.value for e in enum_cls]}") from None
+
+
+def _origin_value(v) -> str:
+    if not is_valid_origin(v):
+        raise ValueError(f"origin={v!r}; must be one of {[o.value for o in Origin]} or a custom value like 'x-crowd' "
+                         "(lowercase letters, digits, '.', '_' or '-' after 'x-')")
+    return v.value if hasattr(v, "value") else v
 
 
 class Dataset:
@@ -294,7 +302,7 @@ class Dataset:
             elif k == "kind":
                 v = _enum_value(v, Kind, k)
             elif k == "origin":
-                v = _enum_value(v, Origin, k)
+                v = _origin_value(v)
             elif k == "status":
                 v = _enum_value(v, Status, k)
             idx = t.schema.get_field_index(k)
@@ -384,7 +392,7 @@ def _rows_to_table(rows: Sequence[Mapping[str, Any]], video_id: str, used_ids: s
                 raise ValueError(f"row {i}: '{req}' is required")
         r["video_id"] = video_id
         r["kind"] = _enum_value(r["kind"], Kind, "kind")
-        r["origin"] = _enum_value(r["origin"], Origin, "origin")
+        r["origin"] = _origin_value(r["origin"])
         r["status"] = _enum_value(r.get("status", "unreviewed"), Status, "status")
         r.setdefault("end_frame", r["start_frame"])
         if r["end_frame"] is None:

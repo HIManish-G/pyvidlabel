@@ -1,4 +1,4 @@
-# vidlabel format, spec 0.3.0
+# vidlabel format, spec 0.4.0
 
 Authoritative definitions: `packages/vidlabel-spec` (pydantic models; `vidlabel schema` prints JSON Schema).
 
@@ -34,7 +34,9 @@ Rows with no `view_id` refer to the whole frame. Filter with `ds.annotations(vie
 
 ## Annotation table (one row per annotation, all kinds together)
 See `ANNOTATION_COLUMNS`. Kinds: `marker` (time only), `box` (single frame), `mask` (single frame, also has a box).
-`origin`: human | model | imported | other (for `imported`, name the source tool in `tool`). `status`: unreviewed | approved | rejected.
+`origin`: human | model | imported | other, or your own value starting with `x-` (lowercase letters, digits, `.`, `_`, `-`; e.g. `x-crowd`).
+Built-in values keep filters reliable; the `x-` prefix marks a custom one and still catches typos like `Human`. Name the specific
+source in `tool` (for `imported`, the tool the data came from). `status`: unreviewed | approved | rejected.
 Rules checked by the validator: required fields present, enums valid, `end >= start`, frames inside the video,
 label in `vocab.json`, boxes finite and non-empty, markers carry no geometry, masks carry bytes + codec,
 `view_id` exists, `confidence` in 0..1, `extra` is a JSON object, `annotation_id` unique (also across videos).
