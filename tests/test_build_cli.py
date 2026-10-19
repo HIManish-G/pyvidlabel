@@ -88,3 +88,21 @@ def test_spec_schema_and_strictness():
         with pytest.raises(Exception):
             VideoMetadata(**{**base, **bad})
     assert VideoMetadata(**{**base, "rotation": 90, "width": 10}).display_size == (2, 10)
+
+
+def test_video_commands_explain_a_missing_opencv(tmp_path, monkeypatch):
+    import sys
+
+    from vidlabel import VideoSource
+
+    d = Dataset.create(tmp_path / "d")
+    fake = tmp_path / "v.mp4"
+    fake.write_bytes(b"not really a video")
+    meta = make_meta("v").model_copy(update={"sources": [VideoSource(uri=str(fake))]})
+    d.add_video(meta)
+    monkeypatch.setitem(sys.modules, "cv2", None)  # makes `import cv2` raise ImportError
+    r = CliRunner()
+    for args in (["check-video", str(d.path), "v"], ["preview", str(d.path), "v", "--out", str(tmp_path / "o")]):
+        res = r.invoke(app, args)
+        assert res.exit_code == 1 and "[error]" in res.output and "opencv-python-headless" in res.output
+        assert "Traceback" not in res.output

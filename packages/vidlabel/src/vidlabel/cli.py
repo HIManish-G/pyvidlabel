@@ -124,8 +124,12 @@ def preview(path: Path, video_id: str, out: Path = typer.Option(Path("preview_ou
     ds = Dataset.open(path)
     meta = ds.video(video_id)
     chosen = parse_frames(frames, meta.frame_count)[::max(every, 1)] if frames else None
-    written = render_preview(ds, video_id, out, frames=chosen, video_path=_resolve_video(ds, video_id, video_path, root),
-                             view_id=view, mp4=mp4)
+    try:
+        written = render_preview(ds, video_id, out, frames=chosen, video_path=_resolve_video(ds, video_id, video_path, root),
+                                 view_id=view, mp4=mp4)
+    except (ImportError, FileNotFoundError, ValueError, IndexError) as e:
+        typer.echo(f"[error] {e}")
+        raise typer.Exit(1)
     typer.echo(f"wrote {len(written)} file(s) to {out}")
 
 
@@ -136,7 +140,11 @@ def check_video_cmd(path: Path, video_id: str, video_path: Optional[Path] = type
     """Check that the video file on disk matches the metadata registered for it."""
     from .frames import check_video
     ds = Dataset.open(path)
-    problems = check_video(_resolve_video(ds, video_id, video_path, root), ds.video(video_id), verify_hash=hash)
+    try:
+        problems = check_video(_resolve_video(ds, video_id, video_path, root), ds.video(video_id), verify_hash=hash)
+    except (ImportError, FileNotFoundError, ValueError) as e:
+        typer.echo(f"[error] {e}")
+        raise typer.Exit(1)
     for p in problems:
         typer.echo(f"[error] {p}")
     typer.echo("ok: file matches the metadata" if not problems else f"{len(problems)} problem(s)")

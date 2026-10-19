@@ -51,7 +51,7 @@ ds.build(view_ids=["lower_strip"])        # a release for just that view
 ## Check your annotations against the real video
 
 ```bash
-pip install "vidlabel[video]"                       # adds OpenCV
+pip install "vidlabel[video]"                       # adds OpenCV (source checkout: pip install -e "packages/vidlabel[video]")
 vidlabel check-video my_dataset clip                # file on disk matches the metadata? (size, frame count, --hash)
 vidlabel preview my_dataset clip --out preview_out  # draws boxes, masks and markers on real frames
 vidlabel preview my_dataset clip --view lower_strip # a view's crop, with only that view's annotations

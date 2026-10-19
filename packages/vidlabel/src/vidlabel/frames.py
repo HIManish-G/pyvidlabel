@@ -22,7 +22,8 @@ def _cv2():
     try:
         import cv2
     except ImportError as e:  # pragma: no cover - exercised only without OpenCV
-        raise ImportError('reading frames needs OpenCV: pip install "vidlabel[video]" (or opencv-python-headless)') from e
+        raise ImportError('reading frames needs OpenCV. Install it with: pip install opencv-python-headless '
+                          '(from a source checkout: pip install -e "packages/vidlabel[video]")') from e
     return cv2
 
 

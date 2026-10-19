@@ -26,6 +26,7 @@ Thumbs.db
 
 # Local datasets and test data (keep real data out of the repo)
 my_ds/
+preview_out/
 sample_ds/
 *.parquet.tmp
 *.json.tmp
