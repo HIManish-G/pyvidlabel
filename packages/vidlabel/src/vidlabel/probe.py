@@ -29,6 +29,27 @@ def _frac(s: str | None) -> Fraction | None:
         return None
 
 
+def _rotation(stream: dict) -> tuple[int, float | None]:
+    """Clockwise degrees to apply to the stored frame for display (0, 90, 180 or 270).
+
+    ffprobe's display-matrix `rotation` is counter-clockwise degrees, so it is negated. The older `rotate` tag is
+    already clockwise. Angles that are not a multiple of 90 cannot be represented: returns (0, raw_angle) so the
+    caller can record them instead of silently dropping them.
+    """
+    raw = None
+    for sd in stream.get("side_data_list", []) or []:
+        if "rotation" in sd:
+            raw = -float(sd["rotation"])
+    if raw is None and (stream.get("tags") or {}).get("rotate"):
+        raw = float(stream["tags"]["rotate"])
+    if raw is None:
+        return 0, None
+    snapped = round(raw / 90) * 90
+    if abs(raw - snapped) > 1.0:
+        return 0, raw
+    return int(snapped) % 360, None
+
+
 def probe_video(path: str | Path, video_id: str | None = None, *, hash: bool = True) -> VideoMetadata:
     if shutil.which("ffprobe") is None:
         raise RuntimeError("ffprobe not found; install ffmpeg or build VideoMetadata by hand")
@@ -50,12 +71,9 @@ def probe_video(path: str | Path, video_id: str | None = None, *, hash: bool = T
     else:
         frame_count = round(duration * float(fps)) if duration else 0
         extra["frame_count_estimated"] = True
-    rotation = 0
-    for sd in s.get("side_data_list", []) or []:
-        if "rotation" in sd:
-            rotation = int(round(-float(sd["rotation"]))) % 360
-    if not rotation and (s.get("tags") or {}).get("rotate"):
-        rotation = int(float(s["tags"]["rotate"])) % 360
+    rotation, odd_rotation = _rotation(s)
+    if odd_rotation is not None:
+        extra["unsupported_rotation_degrees"] = odd_rotation
     tb = _frac(s.get("time_base"))
     br = s.get("bit_rate") or info.get("format", {}).get("bit_rate")
     bit_rate = int(br) if str(br or "").isdigit() else None
@@ -64,6 +82,6 @@ def probe_video(path: str | Path, video_id: str | None = None, *, hash: bool = T
         duration_s=duration, frame_count=frame_count, fps=Rational(num=fps.numerator, den=fps.denominator),
         timebase=Rational(num=tb.numerator, den=tb.denominator) if tb else None,
         is_vfr=bool(avg and real and avg != real), width=int(s["width"]), height=int(s["height"]),
-        rotation=rotation if rotation in (0, 90, 180, 270) else 0, codec=s.get("codec_name"), pix_fmt=s.get("pix_fmt"), bit_rate=bit_rate,
+        rotation=rotation, codec=s.get("codec_name"), pix_fmt=s.get("pix_fmt"), bit_rate=bit_rate,
         sources=[VideoSource(uri=str(p))], ingested_at=datetime.now(timezone.utc), extra=extra,
     )

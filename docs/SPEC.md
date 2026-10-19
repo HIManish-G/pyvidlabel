@@ -9,6 +9,8 @@ IDs match `[A-Za-z0-9._-]+`.
 
 ## Conventions
 - **Frames** are 0-indexed in display order. `end_frame` is inclusive. A point has `start_frame == end_frame`.
+- **Rotation**: `rotation` is the *clockwise* angle (0, 90, 180, 270) applied to the stored frame for display; `width`/`height`
+  are the stored size, and 90/270 swap them for display. (ffprobe reports the display matrix counter-clockwise, so it is negated.)
 - **Coordinates** are pixels, origin top-left, in the video's *displayed* orientation (after `rotation`), always in
   full source-video coordinates, even when labelled in a view. `x1`/`y1` are exclusive.
 - **Video identity**: `content_hash` (`sha256:<hex>`) identifies the file; `sources` lists places it has been seen.

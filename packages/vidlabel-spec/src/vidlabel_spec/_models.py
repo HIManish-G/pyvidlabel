@@ -50,7 +50,7 @@ class VideoMetadata(_Strict):
     is_vfr: bool = False
     width: int = Field(gt=0)
     height: int = Field(gt=0)
-    rotation: int = 0
+    rotation: int = Field(default=0, description="Clockwise degrees (0, 90, 180, 270) applied to the stored frame to display it upright. 90 and 270 swap width and height.")
     codec: str | None = None
     pix_fmt: str | None = None
     bit_rate: int | None = Field(default=None, ge=0, description="Bits per second as reported by the container/stream.")
