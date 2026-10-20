@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 video = ["opencv-python-headless>=4.8"]
+torch = ["opencv-python-headless>=4.8", "torch>=2.0"]
 
 [project.scripts]
 vidlabel = "vidlabel.cli:app"

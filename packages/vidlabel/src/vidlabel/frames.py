@@ -61,6 +61,34 @@ def crop_to_view(frame: np.ndarray, view: View | None) -> np.ndarray:
     return out
 
 
+def crop_mask_to_view(mask: np.ndarray, view: View | None) -> np.ndarray:
+    """Crop a full-frame mask to a view's region and resize (nearest) to its output_size, like `crop_to_view` does for pixels."""
+    from . import masks
+    if view is None or view.region is None:
+        return mask
+    r = view.region
+    m = mask[r.y:r.y + r.height, r.x:r.x + r.width]
+    if view.output_size is not None and (m.shape[1], m.shape[0]) != tuple(view.output_size):
+        m = masks.resize_nearest(m, view.output_size[1], view.output_size[0])
+    return m
+
+
+def _display_frame(bgr: np.ndarray, meta: VideoMetadata, cap_rotates: bool, view: View | None) -> np.ndarray:
+    """A decoded BGR frame -> RGB in displayed orientation, cropped to `view`. Checks it is the registered file."""
+    cv2 = _cv2()
+    stored, display = (meta.width, meta.height), meta.display_size
+    h, w = bgr.shape[:2]
+    if (w, h) == stored:
+        already_rotated = cap_rotates
+    elif (w, h) == display and stored != display:
+        already_rotated = True  # this OpenCV build rotated for us
+    else:
+        raise ValueError(f"video frame is {w}x{h} but the metadata says {stored[0]}x{stored[1]} "
+                         f"(rotation {meta.rotation}): this is not the file that was registered")
+    frame = bgr if already_rotated else _apply_rotation(bgr, meta.rotation)
+    return crop_to_view(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), view)
+
+
 def read_frames(path: str | Path, frame_indices: Iterable[int], meta: VideoMetadata, *,
                 view: View | None = None) -> Iterator[tuple[int, np.ndarray]]:
     """Yield (frame_index, RGB frame) for each requested index, in increasing order.
@@ -77,8 +105,6 @@ def read_frames(path: str | Path, frame_indices: Iterable[int], meta: VideoMetad
     cap = _open(path)
     try:
         cap_rotates = bool(cap.get(cv2.CAP_PROP_ORIENTATION_AUTO))  # True only if OpenCV would not let us disable it
-        stored = (meta.width, meta.height)
-        display = meta.display_size
         k, pos = 0, 0
         while k < len(wanted):
             if pos < wanted[k]:
@@ -89,16 +115,7 @@ def read_frames(path: str | Path, frame_indices: Iterable[int], meta: VideoMetad
             ok, bgr = cap.read()
             if not ok:
                 break
-            h, w = bgr.shape[:2]
-            if (w, h) == stored:
-                already_rotated = cap_rotates
-            elif (w, h) == display and stored != display:
-                already_rotated = True  # this OpenCV build rotated for us
-            else:
-                raise ValueError(f"video frame is {w}x{h} but the metadata says {stored[0]}x{stored[1]} "
-                                 f"(rotation {meta.rotation}): this is not the file that was registered")
-            frame = bgr if already_rotated else _apply_rotation(bgr, meta.rotation)
-            frame = crop_to_view(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), view)
+            frame = _display_frame(bgr, meta, cap_rotates, view)
             yield pos, frame
             pos += 1
             k += 1
@@ -106,6 +123,59 @@ def read_frames(path: str | Path, frame_indices: Iterable[int], meta: VideoMetad
             raise IndexError(f"frame {wanted[k]} is past the end of the video (only {pos} frames could be decoded)")
     finally:
         cap.release()
+
+
+class FrameReader:
+    """Keeps one video open and reads frames by index. Reading forwards is cheap (it only decodes what is in between);
+    asking for an earlier frame than the last one reopens the file and decodes from the start. For training, ask for
+    frames in increasing order (see `VideoStream`). Not thread-safe; use one reader per process or thread.
+    """
+
+    def __init__(self, path: str | Path, meta: VideoMetadata, view: View | None = None):
+        self.path, self.meta, self.view = Path(path), meta, view
+        self._cap = None
+        self._pos = 0  # index of the next frame the decoder will return
+        self._cap_rotates = False
+
+    def _reopen(self) -> None:
+        self.close()
+        self._cap = _open(self.path)
+        self._cap_rotates = bool(self._cap.get(_cv2().CAP_PROP_ORIENTATION_AUTO))
+        self._pos = 0
+
+    def read(self, index: int) -> np.ndarray:
+        """RGB frame `index` in displayed orientation, cropped to the view if there is one."""
+        index = int(index)
+        if index < 0:
+            raise IndexError("frame indices must be >= 0")
+        if self._cap is None or index < self._pos:
+            self._reopen()
+        while self._pos < index:
+            if not self._cap.grab():
+                raise IndexError(f"frame {index} is past the end of the video (only {self._pos} frames could be decoded)")
+            self._pos += 1
+        ok, bgr = self._cap.read()
+        if not ok:
+            raise IndexError(f"frame {index} is past the end of the video (only {self._pos} frames could be decoded)")
+        self._pos += 1
+        return _display_frame(bgr, self.meta, self._cap_rotates, self.view)
+
+    def close(self) -> None:
+        if self._cap is not None:
+            self._cap.release()
+            self._cap = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+    def __del__(self):  # pragma: no cover
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 def read_frame(path: str | Path, index: int, meta: VideoMetadata, *, view: View | None = None) -> np.ndarray:

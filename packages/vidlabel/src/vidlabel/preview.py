@@ -13,7 +13,7 @@ from vidlabel_spec import VideoMetadata, View
 
 from . import masks
 from .dataset import Dataset
-from .frames import _cv2, read_frames
+from .frames import _cv2, crop_mask_to_view, read_frames
 
 
 def label_color(label: str) -> tuple[int, int, int]:
@@ -98,14 +98,6 @@ def choose_frames(rows: Sequence[dict], frame_count: int, limit: int = 12) -> li
     return [pool[i] for i in sorted(set(idx.tolist()))]
 
 
-def _mask_in_view(mask: np.ndarray, view: View) -> np.ndarray:
-    r = view.region
-    m = mask[r.y:r.y + r.height, r.x:r.x + r.width] if r else mask
-    if r and view.output_size:
-        m = masks.resize_nearest(m, view.output_size[1], view.output_size[0])
-    return m
-
-
 def draw_annotations(frame: np.ndarray, rows: Iterable[dict], frame_index: int, *, view: View | None = None,
                      style: PreviewStyle | None = None) -> np.ndarray:
     """Return a copy of an RGB frame with the annotations active at `frame_index` drawn on it."""
@@ -130,7 +122,7 @@ def draw_annotations(frame: np.ndarray, rows: Iterable[dict], frame_index: int, 
         if r["kind"] == "mask" and r.get("mask") is not None:
             m = masks.decode(r["mask"])
             if view is not None:
-                m = _mask_in_view(m, view)
+                m = crop_mask_to_view(m, view)
             if m.shape[:2] == out.shape[:2]:
                 out[m] = ((1 - st.mask_opacity) * out[m] + st.mask_opacity * np.array(color)).astype(np.uint8)
         box = (r["x0"], r["y0"], r["x1"], r["y1"])

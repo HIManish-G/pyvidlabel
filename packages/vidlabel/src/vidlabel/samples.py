@@ -1,0 +1,205 @@
+"""Turn a dataset (ideally a pinned compiled release) into training samples: a frame of a video plus the boxes,
+masks, labels and frame-level markers that apply to it. This module needs no deep-learning framework; `torch_data`
+wraps it for PyTorch, and the same class works for JAX, TensorFlow or plain NumPy.
+
+A sample is a dict of NumPy arrays:
+  image        (H, W, 3) uint8 RGB, displayed orientation, cropped/resized to the view if one is given
+  boxes        (N, 4) float32 in `box_format` (pixels of `image`, or fractions with normalized=True)
+  labels       (N,) int64 class index (position in `class_names`, plus `label_offset`)
+  track_ids    (N,) int64, -1 when the annotation has no track
+  annotation_ids (N,) int64
+  masks        (N, H, W) uint8, only with with_masks=True
+  frame_labels (C,) float32 multi-hot of the time markers active on this frame
+  video_id, view_id, frame_index
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Sequence
+
+import numpy as np
+import pyarrow as pa
+import pyarrow.compute as pc
+from vidlabel_spec import View
+
+from . import masks as masklib
+from .boxes import convert_boxes
+from .build import Compiled
+from .dataset import Dataset
+from .frames import FrameReader, crop_mask_to_view
+
+_BASE_COLUMNS = ["annotation_id", "video_id", "start_frame", "end_frame", "kind", "label", "track_id",
+                 "x0", "y0", "x1", "y1", "view_id", "origin", "confidence"]
+
+
+class FrameSamples:
+    """Which frames to train on, and what the targets for each are. Build it once, then read samples by (video, frame).
+
+    release       "latest", a release id such as "r3fa91c0b2d44" (pinned: the same table every time), or None to read the
+                  live annotations (unreviewed + approved), which can change between runs.
+    view_id       train on that view's crop, with only that view's annotations. None: full frames, all annotations.
+    kinds         which annotation kinds define the samples and targets: "box", "mask", "marker".
+                  Time markers always fill `frame_labels`; add "marker" to also sample frames that only have markers.
+    labels        keep only these labels. Class indices then follow this order; default is the dataset's vocabulary order.
+    frames        "annotated" (frames that have a selected annotation) or "all" (every frame of every video).
+    stride        keep every Nth frame of the list above.
+    """
+
+    def __init__(self, ds: Dataset, *, release: str | None = "latest", view_id: str | None = None,
+                 videos: Sequence[str] | None = None, kinds: Sequence[str] = ("box", "mask"),
+                 labels: Sequence[str] | None = None, origins: Sequence[str] | None = None,
+                 min_confidence: float | None = None, frames: str = "annotated", stride: int = 1,
+                 with_masks: bool = False, box_format: str = "xyxy", normalized: bool = False, label_offset: int = 0,
+                 roots: Sequence[str | Path] = ()):
+        if frames not in ("annotated", "all"):
+            raise ValueError("frames must be 'annotated' or 'all'")
+        if stride < 1:
+            raise ValueError("stride must be >= 1")
+        bad = set(kinds) - {"box", "mask", "marker"}
+        if bad:
+            raise ValueError(f"unknown kinds {sorted(bad)}")
+        self.ds, self.view_id, self.kinds = ds, view_id, tuple(kinds)
+        self.with_masks, self.box_format, self.normalized, self.label_offset = with_masks, box_format, normalized, label_offset
+        self.roots = list(roots)
+        self.view: View | None = ds.view(view_id) if view_id else None
+        table, self.release_id, pinned_vocab = self._load(release, with_masks)
+        # a pinned release carries the vocabulary it was built with, so class indices cannot drift if labels are added later
+        vocab = [l.name for l in (pinned_vocab or ds.vocab).labels]
+        if labels is not None:
+            unknown = [l for l in labels if l not in vocab]
+            if unknown:
+                raise ValueError(f"labels not in the vocabulary: {unknown}")
+        self.class_names: list[str] = list(labels) if labels is not None else vocab
+        self._class_of = {n: i + label_offset for i, n in enumerate(self.class_names)}
+        convert_boxes(np.zeros((0, 4)), "xyxy", box_format)  # validates box_format early
+
+        keep = pc.is_in(table.column("label"), value_set=pa.array(self.class_names, pa.string()))
+        if view_id:
+            keep = pc.and_(keep, pc.fill_null(pc.equal(table.column("view_id"), view_id), False))
+        if videos is not None:
+            keep = pc.and_(keep, pc.is_in(table.column("video_id"), value_set=pa.array(list(videos), pa.string())))
+        if origins is not None:
+            keep = pc.and_(keep, pc.is_in(table.column("origin"), value_set=pa.array(list(origins), pa.string())))
+        if min_confidence is not None:
+            keep = pc.and_(keep, pc.fill_null(pc.greater_equal(table.column("confidence"), min_confidence), True))
+        self._rows = table.filter(keep).to_pylist()
+
+        self._points: dict[tuple[str, int], list[int]] = {}   # (video, frame) -> row indices, single-frame rows
+        self._spans: dict[str, list[tuple[int, int, int]]] = {}  # video -> (start, end, row index) for multi-frame rows
+        for i, r in enumerate(self._rows):
+            if r["start_frame"] == r["end_frame"]:
+                self._points.setdefault((r["video_id"], r["start_frame"]), []).append(i)
+            else:
+                self._spans.setdefault(r["video_id"], []).append((r["start_frame"], r["end_frame"], i))
+
+        video_ids = list(videos) if videos is not None else ds.video_ids()
+        self._videos = [v for v in video_ids if v in set(ds.video_ids())]
+        self.index: list[tuple[str, int]] = []
+        self._by_video: dict[str, list[int]] = {}
+        for vid in self._videos:
+            fr = self._frames_for(vid, frames)[::stride]
+            if fr:
+                self._by_video[vid] = fr
+                self.index.extend((vid, f) for f in fr)
+
+    # ---- loading ----
+    def _load(self, release, with_masks):
+        cols = list(_BASE_COLUMNS) + (["mask"] if with_masks else [])
+        if release is None:
+            t = self.ds.annotations(status=["unreviewed", "approved"], columns=cols)
+            return t, None, None
+        root = self.ds.path / "compiled"
+        if not root.exists() or (release == "latest" and not (root / "LATEST").exists()):
+            raise FileNotFoundError(f"no compiled release in {self.ds.path}. Run `vidlabel build {self.ds.path}` first "
+                                    f"(or pass release=None to read the live annotations)")
+        path = root if release == "latest" else root / release
+        if not path.exists():
+            raise FileNotFoundError(f"release '{release}' not found in {root}")
+        c = Compiled(path)
+        return c.read(columns=cols), c.release_id, c.vocab
+
+    def _frames_for(self, vid: str, mode: str) -> list[int]:
+        n = self.ds.video(vid).frame_count
+        lo, hi = 0, n - 1
+        if self.view is not None and self.view.frame_range is not None:
+            lo, hi = max(lo, self.view.frame_range[0]), min(hi, self.view.frame_range[1])
+        if mode == "all":
+            return list(range(lo, hi + 1))
+        wanted = set(self.kinds)
+        out: set[int] = set()
+        for (v, f), idx in self._points.items():
+            if v == vid and any(self._rows[i]["kind"] in wanted for i in idx):
+                out.add(f)
+        for a, b, i in self._spans.get(vid, []):
+            if self._rows[i]["kind"] in wanted:
+                out.update(range(max(a, lo), min(b, hi) + 1))
+        return sorted(f for f in out if lo <= f <= hi)
+
+    # ---- access ----
+    def __len__(self) -> int:
+        return len(self.index)
+
+    def video_ids(self) -> list[str]:
+        """Videos that contribute at least one sample."""
+        return list(self._by_video)
+
+    def frames_of(self, video_id: str) -> list[int]:
+        return list(self._by_video.get(video_id, []))
+
+    def video_path(self, video_id: str) -> Path:
+        p = self.ds.resolve_video_path(video_id, self.roots)
+        if p is None:
+            raise FileNotFoundError(f"cannot find the video for '{video_id}'; pass roots=[...] to FrameSamples")
+        return Path(p)
+
+    def reader(self, video_id: str) -> FrameReader:
+        return FrameReader(self.video_path(video_id), self.ds.video(video_id), self.view)
+
+    def _active(self, video_id: str, frame: int) -> list[dict]:
+        rows = [self._rows[i] for i in self._points.get((video_id, frame), [])]
+        rows += [self._rows[i] for a, b, i in self._spans.get(video_id, []) if a <= frame <= b]
+        return rows
+
+    def targets(self, video_id: str, frame: int, image_size: tuple[int, int]) -> dict:
+        """Boxes, labels, masks and frame labels for one frame. `image_size` is (width, height) of the image returned."""
+        w, h = image_size
+        frame_labels = np.zeros(len(self.class_names), np.float32)
+        boxes, labels, tracks, ids, mks = [], [], [], [], []
+        for r in self._active(video_id, frame):
+            if r["kind"] == "marker":
+                frame_labels[self._class_of[r["label"]] - self.label_offset] = 1.0
+                continue
+            if r["kind"] not in self.kinds or None in (r["x0"], r["y0"], r["x1"], r["y1"]):
+                continue
+            box = (r["x0"], r["y0"], r["x1"], r["y1"])
+            boxes.append(self.view.to_view_box(box) if self.view else box)
+            labels.append(self._class_of[r["label"]])
+            tracks.append(-1 if r["track_id"] is None else r["track_id"])
+            ids.append(r["annotation_id"])
+            if self.with_masks:
+                m = np.zeros((h, w), np.uint8)
+                if r.get("mask") is not None:
+                    full = crop_mask_to_view(masklib.decode(r["mask"]), self.view)
+                    if full.shape[:2] == (h, w):
+                        m = full.astype(np.uint8)
+                mks.append(m)
+        out = {
+            "boxes": convert_boxes(np.array(boxes).reshape(-1, 4), "xyxy", self.box_format, size=(w, h),
+                                   dst_normalized=self.normalized),
+            "labels": np.array(labels, np.int64), "track_ids": np.array(tracks, np.int64),
+            "annotation_ids": np.array(ids, np.int64), "frame_labels": frame_labels,
+        }
+        if self.with_masks:
+            out["masks"] = np.stack(mks) if mks else np.zeros((0, h, w), np.uint8)
+        return out
+
+    def sample(self, video_id: str, frame: int, image: np.ndarray) -> dict:
+        """The full sample for a frame whose pixels you already have."""
+        t = self.targets(video_id, frame, (image.shape[1], image.shape[0]))
+        return {"image": image, **t, "video_id": video_id, "view_id": self.view_id, "frame_index": int(frame)}
+
+    def describe(self) -> dict:
+        """What to log next to a training run so it can be reproduced."""
+        return {"release_id": self.release_id, "view_id": self.view_id, "kinds": list(self.kinds),
+                "class_names": self.class_names, "label_offset": self.label_offset, "box_format": self.box_format,
+                "normalized": self.normalized, "n_samples": len(self), "n_videos": len(self._by_video)}

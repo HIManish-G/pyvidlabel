@@ -11,7 +11,7 @@ from typing import Sequence
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
-from vidlabel_spec import SPEC_VERSION, Release
+from vidlabel_spec import SPEC_VERSION, Release, Vocab
 
 from ._arrow import ARROW_SCHEMA, ROW_GROUP_SIZE, write_parquet
 from .dataset import Dataset
@@ -31,7 +31,10 @@ def _sha256(path: Path) -> str:
 def build(ds: Dataset, *, statuses: Sequence[str] = ("unreviewed", "approved"), origins: Sequence[str] | None = None,
           kinds: Sequence[str] | None = None, video_ids: Sequence[str] | None = None,
           view_ids: Sequence[str | None] | None = None, row_group_size: int = ROW_GROUP_SIZE, check: bool = True) -> tuple[Release, Path]:
-    """Write compiled/<release_id>/{annotations.parquet, release.json}. Rejected annotations are excluded by default.
+    """Write compiled/<release_id>/{annotations.parquet, vocab.json, release.json}. Rejected annotations are excluded by default.
+
+    vocab.json is a snapshot of the label vocabulary, so class indices derived from a pinned release cannot change when
+    labels are added to the dataset later.
 
     The release id is the hash of the file contents: same data and filters give the same id, so a training run can
     record it and later reproduce exactly the same table.
@@ -59,10 +62,13 @@ def build(ds: Dataset, *, statuses: Sequence[str] = ("unreviewed", "approved"), 
     else:
         final.mkdir()
         shutil.move(str(tmp), final / "annotations.parquet")
+    if not (final / "vocab.json").exists():
+        (final / "vocab.json").write_text(ds.vocab.model_dump_json(indent=2))
+    vocab_digest = _sha256(final / "vocab.json")
     release = Release(
         release_id=release_id, spec_version=SPEC_VERSION, created_at=datetime.now(timezone.utc),
         n_rows=table.num_rows, n_videos=len(parts), row_group_size=row_group_size,
-        files={"annotations.parquet": f"sha256:{digest}"},
+        files={"annotations.parquet": f"sha256:{digest}", "vocab.json": f"sha256:{vocab_digest}"},
         extra={"statuses": list(statuses), "origins": list(origins) if origins else None,
                "kinds": list(kinds) if kinds else None, "video_ids": ids,
                "view_ids": list(view_ids) if view_ids is not None else None},
@@ -103,6 +109,12 @@ class Compiled:
     @property
     def release_id(self) -> str:
         return self.release.release_id
+
+    @property
+    def vocab(self) -> Vocab | None:
+        """The label vocabulary as it was when this release was built (None for releases made before it was saved)."""
+        p = self.path / "vocab.json"
+        return Vocab.model_validate_json(p.read_text()) if p.exists() else None
 
     def row_groups_for(self, video_id: str, start: int, end: int) -> list[int]:
         out = []

@@ -4,7 +4,7 @@ Authoritative definitions: `packages/vidlabel-spec` (pydantic models; `vidlabel 
 
 ## Layout
 `manifest.json`, `vocab.json`, `videos/<video_id>/metadata.json`, `videos/<video_id>/annotations.parquet`,
-`views/<view_id>.json`, optional `compiled/<release_id>/{annotations.parquet,release.json}`, `compiled/LATEST`.
+`views/<view_id>.json`, optional `compiled/<release_id>/{annotations.parquet,vocab.json,release.json}`, `compiled/LATEST`.
 IDs match `[A-Za-z0-9._-]+`.
 
 ## Conventions
@@ -55,6 +55,8 @@ Header (little endian): `u8 version=1; u32 frame_h, frame_w, crop_y0, crop_x0, c
 `vidlabel build` merges per-video files into one table sorted by (`video_id`, `start_frame`, `annotation_id`),
 excluding `rejected` by default. `release_id = "r" + first 12 hex of the file's sha256`, so identical data and
 filters give the same id. Pin it in training configs. `Compiled.clip()` prunes row groups by statistics.
+Each release folder also holds `vocab.json`, a snapshot of the label vocabulary at build time, so class indices derived from
+a pinned release stay fixed when labels are added later. Releases made before this was added fall back to the live vocabulary.
 
 ## Editing rules (0.1)
 Each video has its own annotation file, so people working on different videos never conflict. Writes are atomic

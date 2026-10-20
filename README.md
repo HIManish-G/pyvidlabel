@@ -62,6 +62,40 @@ vidlabel preview my_dataset clip --color "person=red;car=#00ff00" --thickness 4 
 From Python: `vidlabel.frames.read_frames(path, [0, 10, 250], meta)` returns frame-accurate RGB frames in displayed
 orientation, optionally cropped to a view.
 
+## Training
+
+```bash
+pip install "vidlabel[torch]"          # OpenCV + PyTorch (PyTorch's own page has GPU builds)
+vidlabel build my_dataset              # prints a release id such as r3fa91c0b2d44: pin it in your training config
+```
+
+```python
+from torch.utils.data import DataLoader
+from vidlabel import Dataset, FrameSamples
+from vidlabel.torch_data import VideoStream, collate_frames
+
+ds = Dataset.open("my_dataset")
+samples = FrameSamples(ds, release="r3fa91c0b2d44",       # pinned: same rows and class indices every run
+                       kinds=("box",), box_format="xyxy", label_offset=1)   # e.g. torchvision detection (0 = background)
+loader = DataLoader(VideoStream(samples, shuffle_buffer=256), batch_size=8, num_workers=4, collate_fn=collate_frames)
+for batch in loader:          # batch["image"] uint8 (B,3,H,W); batch["boxes"], ["labels"], ["frame_labels"], ... per sample
+    ...
+```
+
+- A sample is one frame: `image`, `boxes` (in `xyxy`, `xywh` or `cxcywh`, pixels or `normalized=True`), `labels`,
+  `track_ids`, optional `masks` (`with_masks=True`), and `frame_labels` (multi-hot of the time markers active on that frame).
+- `view_id="lower_strip"` trains on that view's crop (resized to its `output_size`) with only that view's annotations.
+- `frames="annotated"` (default) samples frames that have a box/mask; `frames="all"` every frame; `stride=N` thins either.
+- A release also stores the label vocabulary it was built with, so class indices do not change if you add labels later.
+  `samples.describe()` returns what to log with a run. `release=None` reads the live annotations instead.
+- `VideoStream` decodes each video once, front to back (videos are shared between workers and distributed ranks; use at
+  least as many videos as workers; call `set_epoch(n)` each epoch). `VideoFrames` is map-style (`ds[i]`, any sampler), but
+  going backwards in a video re-decodes it from the start. Measured on a 30 s 720p clip: about 108 samples/s streaming
+  vs about 2/s with shuffled random access. Prefer `VideoStream`; keep `VideoFrames` for validation and debugging.
+- Works without PyTorch too: `FrameSamples` returns NumPy arrays (`samples.reader(video_id).read(frame)` for pixels,
+  `samples.sample(video_id, frame, image)` for a full sample), so it plugs into JAX, TensorFlow or plain loops.
+- Augmentation is yours: pass `transform=fn` (sample in, sample out) and keep boxes consistent with the image.
+
 ## Masks
 
 Stored losslessly as: crop to the mask's bounding box, bit-pack rows, zstd (`bitpack_zstd`). In benchmarks this was
@@ -71,8 +105,9 @@ Stored losslessly as: crop to the mask's bounding box, bit-pack rows, zstd (`bit
 
 ## Status
 
-v0.1, early. Tested: spec, mask codec, read/write/validate, views (coordinate conversion, inside-view checks), build + clip reads, CLI.
-**Not yet verified:** Parquet-vs-Lance speed at scale,
-multi-writer conflicts (one writer per video at a time for now), PyTorch loader.
+v0.1, early. Tested: spec, mask codec, read/write/validate, views (coordinate conversion, inside-view checks), build + clip reads, CLI, frame reading and preview on real H.264,
+PyTorch loader (map-style and streaming, DataLoader workers with fork and spawn).
+**Not yet verified:** Parquet-vs-Lance speed at scale, multi-writer conflicts (one writer per video at a time for now),
+the loader at large scale (many videos, long videos, multi-GPU), seek-based random access.
 
 See `docs/SPEC.md` for the format. MIT licensed.
