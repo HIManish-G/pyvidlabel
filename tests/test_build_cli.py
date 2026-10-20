@@ -106,3 +106,12 @@ def test_video_commands_explain_a_missing_opencv(tmp_path, monkeypatch):
         res = r.invoke(app, args)
         assert res.exit_code == 1 and "[error]" in res.output and "opencv-python-headless" in res.output
         assert "Traceback" not in res.output
+
+
+def test_preview_reports_whether_annotations_were_drawn(tmp_path):
+    from vidlabel.preview import count_drawn
+
+    rows = [{"start_frame": 100, "end_frame": 100}, {"start_frame": 90, "end_frame": 130}]
+    assert count_drawn(rows, [85, 95, 105]) == (1, 2)
+    assert count_drawn(rows, [100]) == (2, 1)
+    assert count_drawn(rows, [0, 1]) == (0, 0)

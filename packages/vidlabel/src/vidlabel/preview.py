@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import colorsys
 import hashlib
+import re
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Mapping, Sequence
 
 import numpy as np
 from vidlabel_spec import VideoMetadata, View
@@ -19,6 +21,54 @@ def label_color(label: str) -> tuple[int, int, int]:
     h = int(hashlib.md5(label.encode()).hexdigest()[:6], 16) / 0xFFFFFF
     r, g, b = colorsys.hsv_to_rgb(h, 0.85, 1.0)
     return int(r * 255), int(g * 255), int(b * 255)
+
+
+_NAMED = {"red": (255, 0, 0), "green": (0, 200, 0), "blue": (0, 90, 255), "yellow": (255, 220, 0), "orange": (255, 140, 0),
+          "cyan": (0, 220, 220), "magenta": (255, 0, 255), "white": (255, 255, 255), "black": (0, 0, 0)}
+
+
+def parse_color(text: str) -> tuple[int, int, int]:
+    """'red', '#ff8800', 'ff8800' or '255,136,0' -> (r, g, b)."""
+    t = text.strip().lower()
+    if t in _NAMED:
+        return _NAMED[t]
+    if re.fullmatch(r"#?[0-9a-f]{6}", t):
+        t = t.lstrip("#")
+        return int(t[0:2], 16), int(t[2:4], 16), int(t[4:6], 16)
+    parts = t.split(",")
+    if len(parts) == 3 and all(p.strip().isdigit() and int(p) < 256 for p in parts):
+        return tuple(int(p) for p in parts)  # type: ignore[return-value]
+    raise ValueError(f"cannot read colour '{text}': use a name ({', '.join(_NAMED)}), '#rrggbb' or 'r,g,b'")
+
+
+def parse_colors(text: str) -> tuple[tuple[int, int, int] | None, dict[str, tuple[int, int, int]]]:
+    """One colour for everything ('red'), per-label colours ('person=red;car=#00ff00'), or both (a bare colour is the default)."""
+    default, per_label = None, {}
+    for part in re.split(r"[;]", text):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" in part:
+            k, v = part.split("=", 1)
+            per_label[k.strip()] = parse_color(v)
+        else:
+            default = parse_color(part)
+    return default, per_label
+
+
+@dataclass
+class PreviewStyle:
+    """How annotations are drawn. Anything left as None is chosen automatically from the frame size."""
+    color: tuple[int, int, int] | None = None                                # one colour for every label
+    label_colors: Mapping[str, tuple[int, int, int]] = field(default_factory=dict)  # overrides, by label name
+    thickness: int | None = None        # box line width in pixels
+    font_scale: float | None = None     # label text size
+    show_labels: bool = True            # text next to boxes (track id, confidence); marker banners are always shown
+    outline: bool = True                # dark border around lines and text so they stay visible on any background
+    mask_opacity: float = 0.5
+
+    def color_for(self, label: str) -> tuple[int, int, int]:
+        return self.label_colors.get(label) or self.color or label_color(label)
 
 
 def parse_frames(spec: str, frame_count: int) -> list[int]:
@@ -56,15 +106,20 @@ def _mask_in_view(mask: np.ndarray, view: View) -> np.ndarray:
     return m
 
 
-def draw_annotations(frame: np.ndarray, rows: Iterable[dict], frame_index: int, *, view: View | None = None) -> np.ndarray:
+def draw_annotations(frame: np.ndarray, rows: Iterable[dict], frame_index: int, *, view: View | None = None,
+                     style: PreviewStyle | None = None) -> np.ndarray:
     """Return a copy of an RGB frame with the annotations active at `frame_index` drawn on it."""
     cv2 = _cv2()
+    st = style or PreviewStyle()
+    auto = max(0.55, frame.shape[1] / 1600)
+    scale = st.font_scale or auto
+    t = st.thickness or max(2, round(frame.shape[1] / 500))
     out = np.ascontiguousarray(frame.copy())
     banner: list[tuple[str, tuple[int, int, int]]] = []
     for r in rows:
         if not (r["start_frame"] <= frame_index <= r["end_frame"]):
             continue
-        color = label_color(r["label"])
+        color = st.color_for(r["label"])
         text = r["label"] + (f"#{r['track_id']}" if r.get("track_id") is not None else "")
         if r.get("confidence") is not None:
             text += f" {r['confidence']:.2f}"
@@ -77,25 +132,41 @@ def draw_annotations(frame: np.ndarray, rows: Iterable[dict], frame_index: int, 
             if view is not None:
                 m = _mask_in_view(m, view)
             if m.shape[:2] == out.shape[:2]:
-                out[m] = (0.5 * out[m] + 0.5 * np.array(color)).astype(np.uint8)
+                out[m] = ((1 - st.mask_opacity) * out[m] + st.mask_opacity * np.array(color)).astype(np.uint8)
         box = (r["x0"], r["y0"], r["x1"], r["y1"])
         if None in box:
             continue
         if view is not None:
             box = view.to_view_box(box)
         x0, y0, x1, y1 = (int(round(v)) for v in box)
-        cv2.rectangle(out, (x0, y0), (x1 - 1, y1 - 1), color, 2)
-        cv2.putText(out, text, (x0 + 2, max(y0 - 4, 12)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+        if st.outline:
+            cv2.rectangle(out, (x0, y0), (x1 - 1, y1 - 1), (0, 0, 0), t + 2)  # dark outline so it shows on any colour
+        cv2.rectangle(out, (x0, y0), (x1 - 1, y1 - 1), color, t)
+        if st.show_labels:
+            pos = (x0 + 4, y0 - 8 if y0 > 24 else y0 + int(24 * scale))
+            if st.outline:
+                cv2.putText(out, text, pos, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), t + 2, cv2.LINE_AA)
+            cv2.putText(out, text, pos, cv2.FONT_HERSHEY_SIMPLEX, scale, color, max(1, t - 1), cv2.LINE_AA)
     for i, (text, color) in enumerate(banner):
-        y = 16 + 18 * i
-        cv2.putText(out, text, (6, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3, cv2.LINE_AA)
-        cv2.putText(out, text, (6, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 1, cv2.LINE_AA)
+        th = max(1, round(scale * 1.8))
+        y = int(24 * scale) + int(30 * scale) * i
+        if st.outline:
+            cv2.putText(out, text, (8, y), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), th + 3, cv2.LINE_AA)
+        cv2.putText(out, text, (8, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, th, cv2.LINE_AA)
     return out
+
+
+def count_drawn(rows: Sequence[dict], frames: Iterable[int]) -> tuple[int, int]:
+    """(annotations active on at least one of `frames`, number of those frames that have any annotation)."""
+    frames = list(frames)
+    hit = {i for i, r in enumerate(rows) if any(r["start_frame"] <= f <= r["end_frame"] for f in frames)}
+    busy = sum(any(r["start_frame"] <= f <= r["end_frame"] for r in rows) for f in frames)
+    return len(hit), busy
 
 
 def render_preview(ds: Dataset, video_id: str, out_dir: str | Path, *, frames: Sequence[int] | None = None,
                    video_path: str | Path | None = None, view_id: str | None = None, mp4: bool = False,
-                   roots: Sequence[str | Path] = ()) -> list[Path]:
+                   roots: Sequence[str | Path] = (), style: PreviewStyle | None = None) -> list[Path]:
     """Write annotated frames (PNG, or one MP4) to out_dir and return the paths.
 
     With `view_id`, shows that view's crop with only that view's annotations, as its pipeline would see them.
@@ -115,7 +186,7 @@ def render_preview(ds: Dataset, video_id: str, out_dir: str | Path, *, frames: S
     writer = None
     try:
         for f, rgb in read_frames(path, chosen, meta, view=view):
-            img = draw_annotations(rgb, rows, f, view=view)
+            img = draw_annotations(rgb, rows, f, view=view, style=style)
             bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
             if mp4:
                 if writer is None:

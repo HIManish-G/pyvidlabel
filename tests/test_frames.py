@@ -234,3 +234,23 @@ def test_cli_preview_and_check_video(ds_with_video, tmp_path):
     wrong = make_video(tmp_path / "w.mp4", n=5)
     bad = r.invoke(app, ["check-video", str(ds.path), "clip", "--video-path", str(wrong)])
     assert bad.exit_code == 1 and "decoded 5 frames" in bad.output
+
+
+def test_preview_style_colours_and_thickness():
+    from vidlabel.preview import PreviewStyle, parse_color, parse_colors
+
+    assert parse_color("red") == (255, 0, 0) and parse_color("#00ff10") == (0, 255, 16) and parse_color("1,2,3") == (1, 2, 3)
+    with pytest.raises(ValueError):
+        parse_color("not-a-colour")
+    assert parse_colors("person=red;car=#0000ff") == (None, {"person": (255, 0, 0), "car": (0, 0, 255)})
+    assert parse_colors("green;car=blue")[0] == (0, 200, 0)
+
+    frame = np.zeros((100, 100, 3), np.uint8)
+    row = {"kind": "box", "label": "thing", "start_frame": 0, "end_frame": 0, "x0": 20, "y0": 20, "x1": 80, "y1": 80,
+           "track_id": None, "confidence": None}
+    thin = draw_annotations(frame, [row], 0, style=PreviewStyle(color=(255, 0, 0), thickness=1, show_labels=False, outline=False))
+    thick = draw_annotations(frame, [row], 0, style=PreviewStyle(color=(255, 0, 0), thickness=7, show_labels=False, outline=False))
+    assert tuple(thin[50, 20]) == (255, 0, 0) and tuple(thin[50, 24]) == (0, 0, 0)
+    assert tuple(thick[50, 24]) == (255, 0, 0)                      # a thicker line reaches further in
+    per = draw_annotations(frame, [row], 0, style=PreviewStyle(label_colors={"thing": (0, 0, 255)}, show_labels=False))
+    assert tuple(per[50, 20]) == (0, 0, 255)

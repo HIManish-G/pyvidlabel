@@ -55,6 +55,8 @@ pip install "vidlabel[video]"                       # adds OpenCV (source checko
 vidlabel check-video my_dataset clip                # file on disk matches the metadata? (size, frame count, --hash)
 vidlabel preview my_dataset clip --out preview_out  # draws boxes, masks and markers on real frames
 vidlabel preview my_dataset clip --view lower_strip # a view's crop, with only that view's annotations
+vidlabel preview my_dataset clip --color "person=red;car=#00ff00" --thickness 4 --font-scale 0.8   # custom look
+# also: --no-labels, --no-outline. In Python: render_preview(..., style=PreviewStyle(color=(255, 0, 0), thickness=4))
 ```
 
 From Python: `vidlabel.frames.read_frames(path, [0, 10, 250], meta)` returns frame-accurate RGB frames in displayed

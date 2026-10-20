@@ -118,19 +118,39 @@ def preview(path: Path, video_id: str, out: Path = typer.Option(Path("preview_ou
             view: Optional[str] = typer.Option(None, help="Show this view's crop and only its annotations."),
             mp4: bool = typer.Option(False, help="Write one MP4 instead of PNG images."),
             video_path: Optional[Path] = typer.Option(None, help="Video file, if the recorded path is stale."),
-            root: list[Path] = typer.Option([], help="Folder(s) to search for the video by file name.")):
+            root: list[Path] = typer.Option([], help="Folder(s) to search for the video by file name."),
+            color: Optional[str] = typer.Option(None, help="Box colour: 'red', '#ff8800' or '255,136,0' for all labels, "
+                                                            "or per label: 'person=red;car=#00ff00'. Default: one colour per label."),
+            thickness: Optional[int] = typer.Option(None, help="Box line width in pixels. Default: scales with the video."),
+            font_scale: Optional[float] = typer.Option(None, help="Label text size, e.g. 0.8. Default: scales with the video."),
+            labels: bool = typer.Option(True, "--labels/--no-labels", help="Write label text next to boxes."),
+            outline: bool = typer.Option(True, "--outline/--no-outline", help="Dark border around boxes and text.")):
     """Draw the annotations on frames of the real video, to check they line up. Needs: pip install "vidlabel[video]"."""
-    from .preview import parse_frames, render_preview
+    from .preview import PreviewStyle, count_drawn, parse_colors, parse_frames, render_preview
     ds = Dataset.open(path)
     meta = ds.video(video_id)
     chosen = parse_frames(frames, meta.frame_count)[::max(every, 1)] if frames else None
     try:
+        default_color, label_colors = parse_colors(color) if color else (None, {})
+        style = PreviewStyle(color=default_color, label_colors=label_colors, thickness=thickness, font_scale=font_scale,
+                             show_labels=labels, outline=outline)
         written = render_preview(ds, video_id, out, frames=chosen, video_path=_resolve_video(ds, video_id, video_path, root),
-                                 view_id=view, mp4=mp4)
+                                 view_id=view, mp4=mp4, style=style)
     except (ImportError, FileNotFoundError, ValueError, IndexError) as e:
         typer.echo(f"[error] {e}")
         raise typer.Exit(1)
     typer.echo(f"wrote {len(written)} file(s) to {out}")
+    rows = ds.annotations(video_id, view_id=view).to_pylist()
+    shown = chosen if chosen is not None else None
+    if shown is not None:
+        n, busy = count_drawn(rows, shown)
+        typer.echo(f"{n} of {len(rows)} annotation(s) are active on the {len(shown)} frame(s) shown ({busy} frame(s) have any)")
+        if rows and not n:
+            first = sorted({r["start_frame"] for r in rows})[:8]
+            typer.echo(f"[note] none of the shown frames has an annotation. Annotated frames start at: {first}. "
+                       f"With --every N only every Nth frame is drawn, so a single-frame box can be skipped.")
+    elif not rows:
+        typer.echo("[note] this video has no annotations" + (f" in view '{view}'" if view else "") + ", so frames are plain.")
 
 
 @app.command("check-video")
