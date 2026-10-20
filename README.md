@@ -89,9 +89,15 @@ for batch in loader:          # batch["image"] uint8 (B,3,H,W); batch["boxes"], 
 - A release also stores the label vocabulary it was built with, so class indices do not change if you add labels later.
   `samples.describe()` returns what to log with a run. `release=None` reads the live annotations instead.
 - `VideoStream` decodes each video once, front to back (videos are shared between workers and distributed ranks; use at
-  least as many videos as workers; call `set_epoch(n)` each epoch). `VideoFrames` is map-style (`ds[i]`, any sampler), but
-  going backwards in a video re-decodes it from the start. Measured on a 30 s 720p clip: about 108 samples/s streaming
-  vs about 2/s with shuffled random access. Prefer `VideoStream`; keep `VideoFrames` for validation and debugging.
+  least as many videos as workers; call `set_epoch(n)` each epoch). `VideoFrames` is map-style (`ds[i]`, any sampler).
+  Prefer `VideoStream` for training: about 90-110 samples/s on a 720p clip in one process, against 2-16 samples/s for
+  shuffled random access (higher when the video has frequent keyframes). Keep `VideoFrames` for validation and debugging.
+- Random access seeks to the nearest keyframe instead of decoding from the start, but only after a one-off check
+  (about 1 s per video per process) that seeking returns exactly the frames sequential decoding does. OpenCV's seeking
+  is exact for ordinary constant-frame-rate files, and measurably wrong on variable-frame-rate video (about 3 in 4
+  frames off by several frames in our test), so those files, and any file that fails the check, fall back to slow
+  sequential decoding with a warning. `vidlabel check-video my_dataset clip --seek` tests a file more thoroughly.
+  Effect on a 10 minute 360p clip: reading frame 17000 took 3.8 s without seeking and 0.01 s with it.
 - Works without PyTorch too: `FrameSamples` returns NumPy arrays (`samples.reader(video_id).read(frame)` for pixels,
   `samples.sample(video_id, frame, image)` for a full sample), so it plugs into JAX, TensorFlow or plain loops.
 - Augmentation is yours: pass `transform=fn` (sample in, sample out) and keep boxes consistent with the image.
@@ -108,6 +114,6 @@ Stored losslessly as: crop to the mask's bounding box, bit-pack rows, zstd (`bit
 v0.1, early. Tested: spec, mask codec, read/write/validate, views (coordinate conversion, inside-view checks), build + clip reads, CLI, frame reading and preview on real H.264,
 PyTorch loader (map-style and streaming, DataLoader workers with fork and spawn).
 **Not yet verified:** Parquet-vs-Lance speed at scale, multi-writer conflicts (one writer per video at a time for now),
-the loader at large scale (many videos, long videos, multi-GPU), seek-based random access.
+the loader at large scale (many videos, long videos, multi-GPU), variable-frame-rate video in real datasets.
 
 See `docs/SPEC.md` for the format. MIT licensed.

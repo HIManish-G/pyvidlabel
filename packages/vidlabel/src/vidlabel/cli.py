@@ -156,9 +156,11 @@ def preview(path: Path, video_id: str, out: Path = typer.Option(Path("preview_ou
 @app.command("check-video")
 def check_video_cmd(path: Path, video_id: str, video_path: Optional[Path] = typer.Option(None),
                     root: list[Path] = typer.Option([], help="Folder(s) to search for the video by file name."),
-                    hash: bool = typer.Option(False, help="Also verify the content hash (reads the whole file).")):
+                    hash: bool = typer.Option(False, help="Also verify the content hash (reads the whole file)."),
+                    seek: bool = typer.Option(False, help="Also test that random-access seeking returns exactly the "
+                                                          "right frames (decodes the whole video once).")):
     """Check that the video file on disk matches the metadata registered for it."""
-    from .frames import check_video
+    from .frames import check_video, seek_mismatches
     ds = Dataset.open(path)
     try:
         problems = check_video(_resolve_video(ds, video_id, video_path, root), ds.video(video_id), verify_hash=hash)
@@ -168,6 +170,21 @@ def check_video_cmd(path: Path, video_id: str, video_path: Optional[Path] = type
     for p in problems:
         typer.echo(f"[error] {p}")
     typer.echo("ok: file matches the metadata" if not problems else f"{len(problems)} problem(s)")
+    if seek and not problems:
+        meta = ds.video(video_id)
+        n = meta.frame_count
+        positions = sorted({int(n * q / 40) for q in range(40)} | {n - 1})
+        try:
+            bad = seek_mismatches(_resolve_video(ds, video_id, video_path, root), meta, positions)
+        except (ImportError, FileNotFoundError, ValueError) as e:
+            typer.echo(f"[error] {e}")
+            raise typer.Exit(1)
+        if bad or meta.is_vfr:
+            why = "the file is variable frame rate" if meta.is_vfr else f"frames {bad[:6]} differ"
+            typer.echo(f"[note] seeking is not frame-exact for this file ({why}). Random access will decode from the "
+                       f"start and be slow; VideoStream is unaffected. Re-encoding as constant frame rate fixes it.")
+        else:
+            typer.echo(f"ok: seeking is frame-exact at {len(positions)} positions, so random access is fast")
     raise typer.Exit(1 if problems else 0)
 
 

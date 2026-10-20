@@ -9,6 +9,9 @@ Decoding is sequential, so reading frame N costs a decode of frames 0..N. That i
 """
 from __future__ import annotations
 
+import hashlib
+import os
+import warnings
 from pathlib import Path
 from typing import Iterable, Iterator
 
@@ -125,17 +128,80 @@ def read_frames(path: str | Path, frame_indices: Iterable[int], meta: VideoMetad
         cap.release()
 
 
+_SEEK_VERDICTS: dict[tuple, bool] = {}   # (path, size, mtime) -> "seeking returns exactly the frames sequential decoding does"
+_SEEK_PROBES = (40, 130, 300)            # frames compared once per video before seeking is trusted
+
+
+def _digest(frame: np.ndarray) -> bytes:
+    return hashlib.blake2b(np.ascontiguousarray(frame).tobytes(), digest_size=16).digest()
+
+
+def seek_mismatches(path: str | Path, meta: VideoMetadata, positions: Iterable[int]) -> list[int]:
+    """Frames at `positions` for which seeking does NOT return exactly what sequential decoding returns.
+
+    Empty means seeking is frame-exact at those positions. OpenCV's seek is exact for ordinary constant-frame-rate
+    files but can land a few frames off on variable-frame-rate video or odd containers, which would silently misalign
+    every box, so seeking is only used after this check (see `FrameReader`).
+    """
+    wanted = sorted({int(p) for p in positions if 0 <= int(p) < meta.frame_count})
+    truth = {i: _digest(f) for i, f in read_frames(path, wanted, meta)}
+    bad: list[int] = []
+    with FrameReader(path, meta, seek="always") as r:
+        # a forward jump from the start, then back and forth, so backward seeks are checked too
+        order = wanted[::-1][:1] + wanted[:1] + wanted[len(wanted) // 2:] + wanted[:len(wanted) // 2]
+        for i in dict.fromkeys(order):
+            try:
+                ok = _digest(r.read(i)) == truth.get(i)
+            except IndexError:
+                ok = False
+            if not ok:
+                bad.append(i)
+    return sorted(bad)
+
+
 class FrameReader:
-    """Keeps one video open and reads frames by index. Reading forwards is cheap (it only decodes what is in between);
-    asking for an earlier frame than the last one reopens the file and decodes from the start. For training, ask for
-    frames in increasing order (see `VideoStream`). Not thread-safe; use one reader per process or thread.
+    """Keeps one video open and reads frames by index.
+
+    Reading forwards only decodes what is in between. Asking for an earlier frame, or one far ahead, normally means
+    decoding from the start of the file; `seek` makes that cheap by jumping to the nearest keyframe first:
+
+      seek="auto"    (default) seek only if it has been verified for this file: not variable frame rate, and the frames
+                     returned after seeking are identical to sequential decoding at a few test positions (checked once
+                     per file per process, a short decode). Otherwise decode sequentially, with a warning.
+      seek="off"     never seek.
+      seek="always"  seek without checking (for tests and for `seek_mismatches`).
+
+    For training prefer `VideoStream`, which reads each video front to back and never needs to seek.
+    Not thread-safe; use one reader per process or thread.
     """
 
-    def __init__(self, path: str | Path, meta: VideoMetadata, view: View | None = None):
+    def __init__(self, path: str | Path, meta: VideoMetadata, view: View | None = None, *, seek: str = "auto",
+                 seek_threshold: int = 100):
+        if seek not in ("auto", "off", "always"):
+            raise ValueError("seek must be 'auto', 'off' or 'always'")
         self.path, self.meta, self.view = Path(path), meta, view
+        self.seek, self.seek_threshold = seek, seek_threshold
         self._cap = None
         self._pos = 0  # index of the next frame the decoder will return
         self._cap_rotates = False
+
+    @property
+    def seek_enabled(self) -> bool:
+        """Whether this reader will use seeking (runs the one-off check in "auto" mode)."""
+        if self.seek != "auto":
+            return self.seek == "always"
+        if self.meta.is_vfr or self.meta.frame_count <= _SEEK_PROBES[0] + 20:
+            return False   # variable frame rate is where seeking is known to be wrong; tiny files do not need it
+        st = os.stat(self.path)
+        key = (str(self.path.resolve()), st.st_size, st.st_mtime_ns, self.meta.frame_count)
+        if key not in _SEEK_VERDICTS:
+            bad = seek_mismatches(self.path, self.meta, _SEEK_PROBES)
+            _SEEK_VERDICTS[key] = not bad
+            if bad:
+                warnings.warn(f"{self.path.name}: seeking is not frame-exact here (frames {bad} differ), so random access "
+                              f"decodes from the start and is slow. Use VideoStream, or re-encode as constant frame rate.",
+                              RuntimeWarning, stacklevel=3)
+        return _SEEK_VERDICTS[key]
 
     def _reopen(self) -> None:
         self.close()
@@ -148,8 +214,15 @@ class FrameReader:
         index = int(index)
         if index < 0:
             raise IndexError("frame indices must be >= 0")
-        if self._cap is None or index < self._pos:
+        if self._cap is None:
             self._reopen()
+        gap = index - self._pos
+        if gap < 0 or (gap > self.seek_threshold and self.seek != "off"):
+            if self.seek_enabled:
+                self._cap.set(_cv2().CAP_PROP_POS_FRAMES, index)
+                self._pos = index
+            elif gap < 0:
+                self._reopen()
         while self._pos < index:
             if not self._cap.grab():
                 raise IndexError(f"frame {index} is past the end of the video (only {self._pos} frames could be decoded)")
