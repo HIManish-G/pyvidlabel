@@ -149,3 +149,16 @@ def test_validator_catches_bad_origin_written_directly(ds):
     t = t.set_column(t.schema.get_field_index("origin"), t.schema.field("origin"), pa.array(["Human"]))
     write_parquet(t, p)
     assert "bad_origin" in {i.code for i in ds.validate()}
+
+
+def test_files_are_utf8_whatever_the_os_locale(tmp_path):
+    """Datasets move between Windows (cp1252), macOS and Linux (UTF-8): JSON must always be UTF-8."""
+    d = Dataset.create(tmp_path / "ds")
+    d.add_labels(["café", "人", "ボール"])
+    d.add_video(make_meta("v"))
+    d.build()
+    for p in [d.path / "vocab.json", *d.path.glob("compiled/*/vocab.json")]:
+        assert p.read_bytes().decode("utf-8")           # would raise UnicodeDecodeError for cp1252 output
+    names = [l.name for l in Dataset.open(d.path).vocab.labels]
+    assert names == ["café", "人", "ボール"]
+    assert "café".encode("utf-8") in (d.path / "vocab.json").read_bytes()

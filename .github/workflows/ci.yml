@@ -2,15 +2,31 @@ name: ci
 on: [push, pull_request]
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false          # one OS failing must not hide the others
       matrix:
+        os: [ubuntu-latest]
         python: ["3.10", "3.12", "3.13"]
+        include:
+          - { os: windows-latest, python: "3.12" }
+          - { os: macos-latest, python: "3.12" }
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "${{ matrix.python }}" }
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Install ffmpeg
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then sudo apt-get update && sudo apt-get install -y ffmpeg
+          elif [ "$RUNNER_OS" = "macOS" ]; then brew install ffmpeg
+          else choco install ffmpeg -y --no-progress; fi
+      - name: Install PyTorch (CPU)
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then pip install torch --index-url https://download.pytorch.org/whl/cpu
+          else pip install torch; fi
       - run: pip install -e packages/vidlabel-spec -e "packages/vidlabel[video]" pytest
+      - run: ffprobe -version | head -1
       - run: pytest -q

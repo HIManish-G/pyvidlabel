@@ -213,7 +213,7 @@ def validate_dataset(path: str | Path, deep: bool = False) -> list[Issue]:
     if not (root / "manifest.json").exists():
         return [Issue("error", "no_manifest", f"{root} has no manifest.json (not a vidlabel dataset)")]
     try:
-        manifest = Manifest.model_validate_json((root / "manifest.json").read_text())
+        manifest = Manifest.model_validate_json((root / "manifest.json").read_text(encoding="utf-8"))
     except (PydanticValidationError, ValueError) as e:
         return [Issue("error", "bad_manifest", f"manifest.json: {e}")]
     if manifest.spec_version.split(".")[0] != SPEC_VERSION.split(".")[0]:
@@ -222,7 +222,7 @@ def validate_dataset(path: str | Path, deep: bool = False) -> list[Issue]:
     vocab_names: set[str] | None = None
     if (root / "vocab.json").exists():
         try:
-            vocab_names = {l.name for l in Vocab.model_validate_json((root / "vocab.json").read_text()).labels}
+            vocab_names = {l.name for l in Vocab.model_validate_json((root / "vocab.json").read_text(encoding="utf-8")).labels}
         except (PydanticValidationError, ValueError) as e:
             err("bad_vocab", f"vocab.json: {e}")
     else:
@@ -234,7 +234,7 @@ def validate_dataset(path: str | Path, deep: bool = False) -> list[Issue]:
     metas: dict[str, VideoMetadata] = {}
     for vf in view_files:
         try:
-            v = View.model_validate_json(vf.read_text())
+            v = View.model_validate_json(vf.read_text(encoding="utf-8"))
             if v.view_id != vf.stem:
                 err("view_id_mismatch", f"views/{vf.name} contains view_id '{v.view_id}'")
             views_map[v.view_id] = v
@@ -261,7 +261,7 @@ def validate_dataset(path: str | Path, deep: bool = False) -> list[Issue]:
             err("no_metadata", f"videos/{vid}/metadata.json is missing")
             continue
         try:
-            meta = VideoMetadata.model_validate_json(mp.read_text())
+            meta = VideoMetadata.model_validate_json(mp.read_text(encoding="utf-8"))
         except (PydanticValidationError, ValueError) as e:
             err("bad_metadata", f"videos/{vid}/metadata.json: {e}")
             continue
@@ -294,7 +294,7 @@ def validate_dataset(path: str | Path, deep: bool = False) -> list[Issue]:
                                 int((c > 1).sum()), [int(x) for x in u[c > 1][:5]]))
     for v in view_files:
         try:
-            vw = View.model_validate_json(v.read_text())
+            vw = View.model_validate_json(v.read_text(encoding="utf-8"))
         except Exception:
             continue
         if vw.video_id not in metas:

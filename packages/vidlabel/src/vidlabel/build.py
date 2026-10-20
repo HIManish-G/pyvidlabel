@@ -63,7 +63,7 @@ def build(ds: Dataset, *, statuses: Sequence[str] = ("unreviewed", "approved"), 
         final.mkdir()
         shutil.move(str(tmp), final / "annotations.parquet")
     if not (final / "vocab.json").exists():
-        (final / "vocab.json").write_text(ds.vocab.model_dump_json(indent=2))
+        (final / "vocab.json").write_text(ds.vocab.model_dump_json(indent=2), encoding="utf-8")
     vocab_digest = _sha256(final / "vocab.json")
     release = Release(
         release_id=release_id, spec_version=SPEC_VERSION, created_at=datetime.now(timezone.utc),
@@ -74,10 +74,10 @@ def build(ds: Dataset, *, statuses: Sequence[str] = ("unreviewed", "approved"), 
                "view_ids": list(view_ids) if view_ids is not None else None},
     )
     if not (final / "release.json").exists():
-        (final / "release.json").write_text(release.model_dump_json(indent=2))
+        (final / "release.json").write_text(release.model_dump_json(indent=2), encoding="utf-8")
     else:
-        release = Release.model_validate_json((final / "release.json").read_text())
-    (out_root / "LATEST").write_text(release_id + "\n")
+        release = Release.model_validate_json((final / "release.json").read_text(encoding="utf-8"))
+    (out_root / "LATEST").write_text(release_id + "\n", encoding="utf-8")
     return release, final
 
 
@@ -87,9 +87,9 @@ class Compiled:
     def __init__(self, path: str | Path):
         p = Path(path)
         if p.is_dir() and (p / "LATEST").exists():  # a compiled/ directory: use the newest release
-            p = p / (p / "LATEST").read_text().strip()
+            p = p / (p / "LATEST").read_text(encoding="utf-8").strip()
         self.path = p
-        self.release = Release.model_validate_json((p / "release.json").read_text())
+        self.release = Release.model_validate_json((p / "release.json").read_text(encoding="utf-8"))
         self._pf = pq.ParquetFile(p / "annotations.parquet")
         self._schema = self._pf.schema_arrow
         md = self._pf.metadata
@@ -114,7 +114,7 @@ class Compiled:
     def vocab(self) -> Vocab | None:
         """The label vocabulary as it was when this release was built (None for releases made before it was saved)."""
         p = self.path / "vocab.json"
-        return Vocab.model_validate_json(p.read_text()) if p.exists() else None
+        return Vocab.model_validate_json(p.read_text(encoding="utf-8")) if p.exists() else None
 
     def row_groups_for(self, video_id: str, start: int, end: int) -> list[int]:
         out = []

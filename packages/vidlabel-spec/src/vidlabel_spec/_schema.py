@@ -21,4 +21,4 @@ def json_schema() -> dict:
 
 
 def write_json_schema(path: str | Path) -> None:
-    Path(path).write_text(json.dumps(json_schema(), indent=2) + "\n")
+    Path(path).write_text(json.dumps(json_schema(), indent=2) + "\n", encoding="utf-8")

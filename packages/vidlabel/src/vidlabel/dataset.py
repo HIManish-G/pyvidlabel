@@ -27,7 +27,7 @@ _IMMUTABLE = {"annotation_id", "video_id", "mask", "mask_codec"}
 def _write_json(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text)
+    tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
 
 
@@ -76,14 +76,14 @@ class Dataset:
     # ---- manifest / vocab ----
     @property
     def manifest(self) -> Manifest:
-        return Manifest.model_validate_json((self.path / "manifest.json").read_text())
+        return Manifest.model_validate_json((self.path / "manifest.json").read_text(encoding="utf-8"))
 
     def _save_manifest(self, m: Manifest) -> None:
         _write_json(self.path / "manifest.json", m.model_dump_json(indent=2))
 
     @property
     def vocab(self) -> Vocab:
-        return Vocab.model_validate_json((self.path / "vocab.json").read_text())
+        return Vocab.model_validate_json((self.path / "vocab.json").read_text(encoding="utf-8"))
 
     def add_labels(self, labels: Iterable[str | Label | Mapping]) -> list[str]:
         """Add labels to the shared vocabulary (existing names are left alone). Returns the names actually added."""
@@ -123,7 +123,7 @@ class Dataset:
         p = self._vdir(video_id) / "metadata.json"
         if not p.exists():
             raise KeyError(f"unknown video '{video_id}'")
-        return VideoMetadata.model_validate_json(p.read_text())
+        return VideoMetadata.model_validate_json(p.read_text(encoding="utf-8"))
 
     def resolve_video_path(self, video_id: str, roots: Sequence[str | Path] = ()) -> Path | None:
         """Find the video file: try each recorded source, then search `roots` for the same file name."""
@@ -169,7 +169,7 @@ class Dataset:
         p = self.path / "views" / f"{view_id}.json"
         if not p.exists():
             raise KeyError(f"unknown view '{view_id}'")
-        return View.model_validate_json(p.read_text())
+        return View.model_validate_json(p.read_text(encoding="utf-8"))
 
     def view_ids(self) -> list[str]:
         return list(self.manifest.views)
