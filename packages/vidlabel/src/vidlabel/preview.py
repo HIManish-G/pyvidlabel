@@ -68,6 +68,7 @@ class PreviewStyle:
     mask_opacity: float = 0.5
 
     def color_for(self, label: str) -> tuple[int, int, int]:
+        """The colour used for a label: its entry in `label_colors`, else `color`, else a stable colour derived from the name."""
         return self.label_colors.get(label) or self.color or label_color(label)
 
 

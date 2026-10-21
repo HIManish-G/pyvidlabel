@@ -61,7 +61,7 @@ ANNOTATION_COLUMNS: tuple[ColumnSpec, ...] = (
     ColumnSpec(name="kind", dtype="dict_string", nullable=False, description="marker | box | mask"),
     ColumnSpec(name="label", dtype="dict_string", nullable=False, description="A label name from vocab.json."),
     ColumnSpec(name="track_id", dtype="int32", nullable=True,
-               description="Ties boxes/masks of one object across frames. Unique within a video."),
+               description="Ties boxes/masks of one object across frames. One id means one object within a video and view (rows labelled in different views have separate id spaces)."),
     ColumnSpec(name="x0", dtype="float32", nullable=True, description="Box left edge, pixels, source-video coordinates."),
     ColumnSpec(name="y0", dtype="float32", nullable=True, description="Box top edge, pixels (origin top-left)."),
     ColumnSpec(name="x1", dtype="float32", nullable=True, description="Box right edge (exclusive)."),

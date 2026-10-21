@@ -50,7 +50,7 @@ def validate(path: Path, deep: bool = typer.Option(False, help="Also decode ever
 
 
 @app.command()
-def build(path: Path, include_rejected: bool = False):
+def build(path: Path, include_rejected: bool = typer.Option(False, help="Also put rejected annotations in the release.")):
     """Compile the sorted training table; prints the release id to pin."""
     statuses = ("unreviewed", "approved", "rejected") if include_rejected else ("unreviewed", "approved")
     rel, out = Dataset.open(path).build(statuses=statuses)
@@ -58,8 +58,9 @@ def build(path: Path, include_rejected: bool = False):
 
 
 @app.command("add-video")
-def add_video(path: Path, video_file: Path, video_id: Optional[str] = None,
-              no_hash: bool = typer.Option(False, help="Skip hashing the file (faster, weaker identity).")):
+def add_video(path: Path, video_file: Path,
+              video_id: Optional[str] = typer.Option(None, help="Id to register it under. Default: the file name without extension."),
+              no_hash: bool = typer.Option(False, "--no-hash", help="Skip hashing the file (faster, weaker identity).")):
     """Probe a video file with ffprobe and register it."""
     from .probe import probe_video
     meta = Dataset.open(path).add_video(probe_video(video_file, video_id, hash=not no_hash))
@@ -125,7 +126,7 @@ def preview(path: Path, video_id: str, out: Path = typer.Option(Path("preview_ou
             font_scale: Optional[float] = typer.Option(None, help="Label text size, e.g. 0.8. Default: scales with the video."),
             labels: bool = typer.Option(True, "--labels/--no-labels", help="Write label text next to boxes."),
             outline: bool = typer.Option(True, "--outline/--no-outline", help="Dark border around boxes and text.")):
-    """Draw the annotations on frames of the real video, to check they line up. Needs: pip install "vidlabel[video]"."""
+    """Draw the annotations on frames of the real video, to check they line up. Needs OpenCV (the video extra)."""
     from .preview import PreviewStyle, count_drawn, parse_colors, parse_frames, render_preview
     ds = Dataset.open(path)
     meta = ds.video(video_id)
@@ -154,7 +155,7 @@ def preview(path: Path, video_id: str, out: Path = typer.Option(Path("preview_ou
 
 
 @app.command("check-video")
-def check_video_cmd(path: Path, video_id: str, video_path: Optional[Path] = typer.Option(None),
+def check_video_cmd(path: Path, video_id: str, video_path: Optional[Path] = typer.Option(None, help="Video file, if the recorded path is stale."),
                     root: list[Path] = typer.Option([], help="Folder(s) to search for the video by file name."),
                     hash: bool = typer.Option(False, help="Also verify the content hash (reads the whole file)."),
                     seek: bool = typer.Option(False, help="Also test that random-access seeking returns exactly the "
@@ -189,7 +190,7 @@ def check_video_cmd(path: Path, video_id: str, video_path: Optional[Path] = type
 
 
 @app.command()
-def schema(out: Optional[Path] = None):
+def schema(out: Optional[Path] = typer.Option(None, help="Write the JSON Schema to this file instead of printing it.")):
     """Print (or write) the JSON Schema of the spec."""
     from vidlabel_spec import json_schema, write_json_schema
     if out:

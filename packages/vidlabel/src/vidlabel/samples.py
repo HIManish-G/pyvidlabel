@@ -35,14 +35,25 @@ _BASE_COLUMNS = ["annotation_id", "video_id", "start_frame", "end_frame", "kind"
 class FrameSamples:
     """Which frames to train on, and what the targets for each are. Build it once, then read samples by (video, frame).
 
-    release       "latest", a release id such as "r3fa91c0b2d44" (pinned: the same table every time), or None to read the
-                  live annotations (unreviewed + approved), which can change between runs.
-    view_id       train on that view's crop, with only that view's annotations. None: full frames, all annotations.
-    kinds         which annotation kinds define the samples and targets: "box", "mask", "marker".
-                  Time markers always fill `frame_labels`; add "marker" to also sample frames that only have markers.
-    labels        keep only these labels. Class indices then follow this order; default is the dataset's vocabulary order.
-    frames        "annotated" (frames that have a selected annotation) or "all" (every frame of every video).
-    stride        keep every Nth frame of the list above.
+    Parameters (all keyword-only except `ds`):
+
+    - `release`: `"latest"`, a release id such as `"r3fa91c0b2d44"` (pinned: the same rows and class indices every time), or
+      `None` to read the live annotations (unreviewed and approved), which can change between runs.
+    - `view_id`: train on that view's crop with only that view's annotations. `None`: full frames, all annotations.
+    - `videos`: restrict to these video ids (default: all).
+    - `kinds`: which kinds define the samples and targets, from `"box"`, `"mask"`, `"marker"`. Markers always fill
+      `frame_labels`; add `"marker"` to also sample frames that only have a marker.
+    - `labels`: keep only these labels; class indices then follow this order (default: the vocabulary's order).
+    - `origins`: keep only rows with these origins, e.g. `["human"]`.
+    - `min_confidence`: drop rows whose confidence is below this (rows with no confidence are kept).
+    - `frames`: `"annotated"` (frames with a selected annotation) or `"all"` (every frame).
+    - `stride`: keep every Nth frame of that list.
+    - `with_masks`: decode masks into the sample (`masks`, aligned with `boxes`).
+    - `box_format`: `"xyxy"`, `"xywh"` or `"cxcywh"`; `normalized=True` gives fractions of the image size.
+    - `label_offset`: added to class indices (e.g. `1` for detectors that reserve 0 for background).
+    - `roots`: folders to search for videos whose recorded path is stale.
+
+    See docs/training.md for what a sample contains.
     """
 
     def __init__(self, ds: Dataset, *, release: str | None = "latest", view_id: str | None = None,
@@ -144,15 +155,18 @@ class FrameSamples:
         return list(self._by_video)
 
     def frames_of(self, video_id: str) -> list[int]:
+        """The frame numbers sampled from one video, in order."""
         return list(self._by_video.get(video_id, []))
 
     def video_path(self, video_id: str) -> Path:
+        """Where the video file is on this machine (recorded paths first, then `roots`). Raises FileNotFoundError."""
         p = self.ds.resolve_video_path(video_id, self.roots)
         if p is None:
             raise FileNotFoundError(f"cannot find the video for '{video_id}'; pass roots=[...] to FrameSamples")
         return Path(p)
 
     def reader(self, video_id: str) -> FrameReader:
+        """A FrameReader for one video, already set up with this object's view. Close it when done (or use `with`)."""
         return FrameReader(self.video_path(video_id), self.ds.video(video_id), self.view)
 
     def _active(self, video_id: str, frame: int) -> list[dict]:

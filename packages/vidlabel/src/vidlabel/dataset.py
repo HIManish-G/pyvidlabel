@@ -18,7 +18,7 @@ from vidlabel_spec import (COLUMN_NAMES, SPEC_VERSION, Kind, Label, Manifest, Or
 
 from . import masks as _masks
 from ._arrow import ARROW_SCHEMA, empty_table, write_parquet
-from .validate import Issue, ValidationError, check_annotation_table, errors
+from .validate import Issue, ValidationError, check_annotation_table, check_tracks, errors
 
 _ROW_FIELDS = set(COLUMN_NAMES) | {"box"}
 _IMMUTABLE = {"annotation_id", "video_id", "mask", "mask_codec"}
@@ -46,6 +46,8 @@ def _origin_value(v) -> str:
 
 
 class Dataset:
+    """A vidlabel dataset: a folder of plain files (see docs/SPEC.md). Make one with `Dataset.create(path)`, open one with
+    `Dataset.open(path)`. There is no server and no lock: one writer per video at a time."""
     def __init__(self, path: str | Path):
         self.path = Path(path)
         if not (self.path / "manifest.json").exists():
@@ -54,6 +56,7 @@ class Dataset:
     # ---- construction ----
     @classmethod
     def create(cls, path: str | Path, exist_ok: bool = False) -> "Dataset":
+        """Make an empty dataset folder. Raises FileExistsError if one is already there, unless `exist_ok=True`."""
         p = Path(path)
         if (p / "manifest.json").exists():
             if not exist_ok:
@@ -68,6 +71,7 @@ class Dataset:
 
     @classmethod
     def open(cls, path: str | Path) -> "Dataset":
+        """Open an existing dataset. Raises FileNotFoundError if the folder is not a vidlabel dataset."""
         return cls(path)
 
     def __repr__(self) -> str:
@@ -76,6 +80,7 @@ class Dataset:
     # ---- manifest / vocab ----
     @property
     def manifest(self) -> Manifest:
+        """The parsed manifest.json: spec version, video ids and view ids."""
         return Manifest.model_validate_json((self.path / "manifest.json").read_text(encoding="utf-8"))
 
     def _save_manifest(self, m: Manifest) -> None:
@@ -83,6 +88,7 @@ class Dataset:
 
     @property
     def vocab(self) -> Vocab:
+        """The parsed vocab.json: the one shared label list."""
         return Vocab.model_validate_json((self.path / "vocab.json").read_text(encoding="utf-8"))
 
     def add_labels(self, labels: Iterable[str | Label | Mapping]) -> list[str]:
@@ -103,12 +109,15 @@ class Dataset:
 
     # ---- videos ----
     def video_ids(self) -> list[str]:
+        """Ids of all registered videos, sorted."""
         return list(self.manifest.videos)
 
     def _vdir(self, video_id: str) -> Path:
         return self.path / "videos" / video_id
 
     def add_video(self, meta: VideoMetadata | Mapping[str, Any], exist_ok: bool = False) -> VideoMetadata:
+        """Register a video from a VideoMetadata (or a dict of its fields), e.g. from `probe_video`. The video file itself
+        is never copied. Raises FileExistsError if the id exists, unless `exist_ok=True` (which replaces the metadata)."""
         meta = meta if isinstance(meta, VideoMetadata) else VideoMetadata.model_validate(meta)
         m = self.manifest
         if meta.video_id in m.videos and not exist_ok:
@@ -120,6 +129,7 @@ class Dataset:
         return meta
 
     def video(self, video_id: str) -> VideoMetadata:
+        """Metadata of one registered video. Raises KeyError for an unknown id."""
         p = self._vdir(video_id) / "metadata.json"
         if not p.exists():
             raise KeyError(f"unknown video '{video_id}'")
@@ -143,6 +153,8 @@ class Dataset:
 
     # ---- views ----
     def add_view(self, view: View | Mapping[str, Any], exist_ok: bool = False) -> View:
+        """Define a named crop and/or frame range of a registered video (see docs/views.md). The region must fit inside the
+        video, `frame_range` inside its length, and `allowed_labels` must already be in the vocabulary."""
         view = view if isinstance(view, View) else View.model_validate(view)
         self.video(view.video_id)  # must exist
         m = self.manifest
@@ -166,12 +178,14 @@ class Dataset:
         return view
 
     def view(self, view_id: str) -> View:
+        """One view definition. Raises KeyError for an unknown id."""
         p = self.path / "views" / f"{view_id}.json"
         if not p.exists():
             raise KeyError(f"unknown view '{view_id}'")
         return View.model_validate_json(p.read_text(encoding="utf-8"))
 
     def view_ids(self) -> list[str]:
+        """Ids of all views, sorted."""
         return list(self.manifest.views)
 
     def _views_map(self) -> dict[str, View]:
@@ -225,6 +239,10 @@ class Dataset:
                 meta = self.video(vid)
                 bad = errors(check_annotation_table(new, frame_count=meta.frame_count or None, size=meta.display_size,
                                                     vocab_names=vocab_names, views=views_map, video_id=vid))
+                new_tracks = pc.drop_null(new.column("track_id"))
+                if len(new_tracks):                                    # tracks must stay consistent with earlier calls too
+                    same = existing.filter(pc.is_in(existing.column("track_id"), value_set=new_tracks.combine_chunks()))
+                    bad += errors(check_tracks(pa.concat_tables([same, new])))
                 if bad:
                     raise ValidationError(bad)
             prepared.append((vid, existing, new))
@@ -278,6 +296,7 @@ class Dataset:
         return out
 
     def delete_annotations(self, video_id: str, annotation_ids: Iterable[int]) -> int:
+        """Remove annotations of one video by id. Returns how many rows were removed."""
         t = self._existing(video_id)
         keep = pc.invert(pc.is_in(t.column("annotation_id"), value_set=pa.array(list(annotation_ids), type=pa.int64())))
         out = t.filter(keep)
@@ -356,6 +375,7 @@ class Dataset:
         return pa.concat_tables(tables) if tables else empty_table(cols)
 
     def stats(self) -> dict[str, Any]:
+        """Counts for `vidlabel info`: totals, and breakdowns by kind, label, origin, status and view, plus one entry per video."""
         t = self.annotations(columns=["kind", "label", "origin", "status", "video_id", "view_id"])
         c = lambda n: dict(Counter(t.column(n).to_pylist()))
         per_video = c("video_id")
@@ -372,10 +392,13 @@ class Dataset:
 
     # ---- convenience ----
     def validate(self, deep: bool = False) -> list[Issue]:
+        """Check the whole dataset against the spec and return a list of Issues (empty = valid). Never raises for bad data.
+        `deep=True` also decodes every mask and checks it against its box and the frame size."""
         from .validate import validate_dataset
         return validate_dataset(self.path, deep=deep)
 
     def build(self, **kwargs):
+        """Compile a training release: `build(**kwargs)` forwards to `vidlabel.build.build` and returns `(Release, path)`."""
         from .build import build as _build
         return _build(self, **kwargs)
 

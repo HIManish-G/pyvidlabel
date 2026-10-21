@@ -108,6 +108,7 @@ class Compiled:
 
     @property
     def release_id(self) -> str:
+        """The release id, e.g. `r3fa91c0b2d44`: derived from the table's contents."""
         return self.release.release_id
 
     @property
@@ -117,6 +118,7 @@ class Compiled:
         return Vocab.model_validate_json(p.read_text(encoding="utf-8")) if p.exists() else None
 
     def row_groups_for(self, video_id: str, start: int, end: int) -> list[int]:
+        """Indices of the Parquet row groups that can contain annotations of `video_id` overlapping frames [start, end]."""
         out = []
         for g, s in enumerate(self._rg):
             if s is None or (s[0] <= video_id <= s[1] and s[2] <= end and s[3] >= start):
@@ -146,4 +148,5 @@ class Compiled:
         return t.select(cols) if cols else t
 
     def read(self, columns: Sequence[str] | None = None) -> pa.Table:
+        """The whole release table (or only `columns`) as a pyarrow Table, sorted by video, start frame and annotation id."""
         return self._pf.read(columns=list(columns) if columns else None)

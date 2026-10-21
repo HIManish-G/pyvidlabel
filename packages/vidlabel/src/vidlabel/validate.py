@@ -62,6 +62,59 @@ def _not_in(table: pa.Table, name: str, allowed: list[str]) -> np.ndarray:
     return np.asarray(pc.fill_null(bad, False).to_numpy(zero_copy_only=False))
 
 
+def _factorize(values) -> np.ndarray:
+    """Small integer code per distinct value (None gets its own code)."""
+    codes: dict = {}
+    return np.array([codes.setdefault(v, len(codes)) for v in values], dtype=np.int64)
+
+
+def _check_tracks(table: pa.Table, report, *, geom: np.ndarray, is_mask: np.ndarray, start: np.ndarray) -> None:
+    """Track rules. A track is one object: identified by (view_id, track_id) within a video. Rejected rows are ignored,
+    since a reviewer who rejects a box normally replaces it under the same id.
+
+      track_label_conflict     (warning)  one track carries more than one label
+      duplicate_track_in_frame (error)    one track has two boxes (or two masks) in the same frame
+    """
+    status = np.asarray(table.column("status").to_pylist(), dtype=object)
+    sel = geom & ~_nulls(table, "track_id") & (status != "rejected")
+    if not sel.any():
+        return
+    idx = np.flatnonzero(sel)
+    track = _np(table, "track_id", dtype=np.int64)[idx]
+    view = _factorize(table.column("view_id").to_pylist())[idx]
+    label = _factorize(table.column("label").to_pylist())[idx]
+    _, group = np.unique(np.stack([view, track], axis=1), axis=0, return_inverse=True)
+    group = group.ravel()
+    pairs = np.unique(np.stack([group, label], axis=1), axis=0)
+    labels_per_track = np.bincount(pairs[:, 0], minlength=int(group.max()) + 1)
+    bad = np.zeros(len(table), dtype=bool)
+    bad[idx[labels_per_track[group] > 1]] = True
+    report("warning", "track_label_conflict", "a track_id is used with more than one label (a track should be one object)", bad)
+    _, inv, counts = np.unique(np.stack([view, track, start[idx], is_mask[idx].astype(np.int64)], axis=1), axis=0,
+                               return_inverse=True, return_counts=True)
+    bad = np.zeros(len(table), dtype=bool)
+    bad[idx[counts[inv.ravel()] > 1]] = True
+    report("error", "duplicate_track_in_frame", "the same track_id appears more than once in one frame (same kind, same view)", bad)
+
+
+def check_tracks(table: pa.Table) -> list[Issue]:
+    """Only the track rules, for a table that already has the standard columns (used when appending to existing rows)."""
+    issues: list[Issue] = []
+    if table.num_rows == 0:
+        return issues
+    ids = _np(table, "annotation_id", dtype=np.int64)
+
+    def report(level, code, msg, bad):
+        n = int(bad.sum())
+        if n:
+            issues.append(Issue(level, code, msg, n, [int(x) for x in ids[bad][:5]]))
+
+    kind = np.asarray(table.column("kind").to_pylist(), dtype=object)
+    _check_tracks(table, report, geom=(kind == "box") | (kind == "mask"), is_mask=kind == "mask",
+                  start=_np(table, "start_frame", dtype=np.int64))
+    return issues
+
+
 def check_annotation_table(
     table: pa.Table, *, frame_count: int | None = None, size: tuple[int, int] | None = None,
     vocab_names: set[str] | None = None, views: Mapping[str, View] | None = None, video_id: str | None = None,
@@ -141,6 +194,7 @@ def check_annotation_table(
     conf = _np(table, "confidence", fill=0.5, dtype=np.float64)
     report("error", "bad_confidence", "confidence must be within 0..1", (conf < 0) | (conf > 1) | ~np.isfinite(conf))
     report("error", "bad_track_id", "track_id must be >= 0", _np(table, "track_id", fill=0) < 0)
+    _check_tracks(table, report, geom=geom, is_mask=is_mask, start=start)
 
     if views is not None:
         vcol = np.asarray(table.column("view_id").to_pylist(), dtype=object)

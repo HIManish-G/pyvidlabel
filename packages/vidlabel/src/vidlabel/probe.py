@@ -13,6 +13,7 @@ from vidlabel_spec import Rational, VideoMetadata, VideoSource
 
 
 def file_hash(path: str | Path) -> str:
+    """`sha256:<hex>` of a file's contents."""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 22), b""):
@@ -51,6 +52,8 @@ def _rotation(stream: dict) -> tuple[int, float | None]:
 
 
 def probe_video(path: str | Path, video_id: str | None = None, *, hash: bool = True) -> VideoMetadata:
+    """Read a video's facts with ffprobe (size, fps as a fraction, frame count, rotation, codec, bit rate) and hash the file
+    unless `hash=False`. Needs `ffprobe` on the PATH. `video_id` defaults to the file name without extension."""
     if shutil.which("ffprobe") is None:
         raise RuntimeError("ffprobe not found; install ffmpeg or build VideoMetadata by hand")
     p = Path(path).resolve()

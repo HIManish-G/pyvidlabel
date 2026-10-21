@@ -1,21 +1,21 @@
 # vidlabel (working name)
 
 An open, directory-based format and Python library for **video annotation data**: time markers and spans, bounding
-boxes, masks, tracks, labels. Everything lives in one annotation table; *who made it* (a person, a model, an imported file)
-is a column, not a separate structure. Video pixels are **not** stored; datasets point at your videos.
+boxes, masks, tracks and labels, all in one annotation table. *Who made a row* (a person, a model, an imported file) is
+a column, not a separate structure. Video pixels are **not** stored; datasets point at your videos.
 
-Inspired by Zarr / GEFF: a tiny spec, a validator, an `extra` field for custom data, and a spec package separate
-from the library.
+Inspired by Zarr and GEFF: a tiny spec, a validator, an `extra` field for custom data, and a spec package separate from
+the library. A dataset is a folder of JSON and Parquet files; there is no server.
 
 ```
 my_dataset/
   manifest.json                 videos, views, spec version
   vocab.json                    the one shared label list
   videos/<video_id>/
-    metadata.json               fps, frame count, size, content hash, where the file has been seen
-    annotations.parquet         every annotation for this video (zstd, row groups, page index)
-  views/<view_id>.json          a crop / time range of a video; annotations stay in source coordinates
-  compiled/<release_id>/        sorted training table + release.json (made by `vidlabel build`)
+    metadata.json               fps, frame count, size, rotation, content hash, where the file has been seen
+    annotations.parquet         every annotation for this video
+  views/<view_id>.json          a crop / time range of a video; annotations stay in full-frame coordinates
+  compiled/<release_id>/        sorted training table + vocabulary snapshot (made by `vidlabel build`)
 ```
 
 ## Quick start
@@ -31,89 +31,48 @@ from vidlabel import Dataset, Compiled
 ds = Dataset.open("my_dataset")
 ds.add_annotations([{"kind": "box", "label": "person", "start_frame": 10, "box": (20, 30, 80, 150),
                      "origin": "model", "tool": "detector"}], "clip1")
-ds.annotations("clip1", kind="box", frames=(0, 100))          # pyarrow Table
+ds.annotations("clip1", kind="box", frames=(0, 100))          # a pyarrow Table
 release, path = ds.build()                                    # pin release.release_id in your training config
-Compiled(path).clip("clip1", 100, 130)                        # fast: only matching row groups are read
 ```
 
-## Views: several crops of one video
+Optional extras: `pip install -e "packages/vidlabel[video]"` (OpenCV: previews, frame reading) and
+`pip install -e "packages/vidlabel[torch]"` (adds PyTorch for the training loader). Registering a video file also needs
+`ffprobe` (part of ffmpeg).
 
-```python
-ds.add_view({"view_id": "lower_strip", "video_id": "clip",
-             "region": {"x": 0, "y": 620, "width": 1280, "height": 100}, "allowed_labels": ["caption_text"]})
-# boxes straight from a model that only saw the strip, in the crop's own pixels; stored in full-frame coordinates
-ds.add_annotations([{"kind": "box", "label": "caption_text", "start_frame": 5, "box": (40, 30, 200, 70),
-                     "origin": "model", "view_id": "lower_strip"}], "clip", coords="view")
-ds.annotations("clip", view_id="lower_strip")
-ds.build(view_ids=["lower_strip"])        # a release for just that view
-```
+## What it does
 
-## Check your annotations against the real video
+- **One table for everything.** Markers, boxes, masks and tracks share columns; `origin`, `tool` and `author` say who made them.
+- **Views.** Several crops of one video, each processed by its own pipeline, stored in one set of full-frame coordinates.
+- **Validation.** Strict models and over fifty documented checks; writes are all-or-nothing and `build` refuses invalid data.
+- **Masks** stored losslessly (crop, bit-pack, zstd): smaller and about 6 times faster to decode than COCO RLE in our measurements.
+- **Releases.** `vidlabel build` makes a sorted table whose id is a hash of its contents, with a label snapshot, so a run can be reproduced exactly.
+- **Check against the real video.** `vidlabel check-video` and `vidlabel preview` (OpenCV) draw annotations on actual frames.
+- **Training.** A framework-free sample builder and PyTorch datasets (streaming and map-style), including crops and box formats.
+- **Runs on Linux, Windows and macOS** (tested in CI, with and without DataLoader workers).
 
-```bash
-pip install "vidlabel[video]"                       # adds OpenCV (source checkout: pip install -e "packages/vidlabel[video]")
-vidlabel check-video my_dataset clip                # file on disk matches the metadata? (size, frame count, --hash)
-vidlabel preview my_dataset clip --out preview_out  # draws boxes, masks and markers on real frames
-vidlabel preview my_dataset clip --view lower_strip # a view's crop, with only that view's annotations
-vidlabel preview my_dataset clip --color "person=red;car=#00ff00" --thickness 4 --font-scale 0.8   # custom look
-# also: --no-labels, --no-outline. In Python: render_preview(..., style=PreviewStyle(color=(255, 0, 0), thickness=4))
-```
+## Documentation
 
-From Python: `vidlabel.frames.read_frames(path, [0, 10, 250], meta)` returns frame-accurate RGB frames in displayed
-orientation, optionally cropped to a view.
+Start at **[docs/index.md](docs/index.md)**.
 
-## Training
-
-```bash
-pip install "vidlabel[torch]"          # OpenCV + PyTorch (PyTorch's own page has GPU builds)
-vidlabel build my_dataset              # prints a release id such as r3fa91c0b2d44: pin it in your training config
-```
-
-```python
-from torch.utils.data import DataLoader
-from vidlabel import Dataset, FrameSamples
-from vidlabel.torch_data import VideoStream, collate_frames
-
-ds = Dataset.open("my_dataset")
-samples = FrameSamples(ds, release="r3fa91c0b2d44",       # pinned: same rows and class indices every run
-                       kinds=("box",), box_format="xyxy", label_offset=1)   # e.g. torchvision detection (0 = background)
-loader = DataLoader(VideoStream(samples, shuffle_buffer=256), batch_size=8, num_workers=4, collate_fn=collate_frames)
-for batch in loader:          # batch["image"] uint8 (B,3,H,W); batch["boxes"], ["labels"], ["frame_labels"], ... per sample
-    ...
-```
-
-- A sample is one frame: `image`, `boxes` (in `xyxy`, `xywh` or `cxcywh`, pixels or `normalized=True`), `labels`,
-  `track_ids`, optional `masks` (`with_masks=True`), and `frame_labels` (multi-hot of the time markers active on that frame).
-- `view_id="lower_strip"` trains on that view's crop (resized to its `output_size`) with only that view's annotations.
-- `frames="annotated"` (default) samples frames that have a box/mask; `frames="all"` every frame; `stride=N` thins either.
-- A release also stores the label vocabulary it was built with, so class indices do not change if you add labels later.
-  `samples.describe()` returns what to log with a run. `release=None` reads the live annotations instead.
-- `VideoStream` decodes each video once, front to back (videos are shared between workers and distributed ranks; use at
-  least as many videos as workers; call `set_epoch(n)` each epoch). `VideoFrames` is map-style (`ds[i]`, any sampler).
-  Prefer `VideoStream` for training: about 90-110 samples/s on a 720p clip in one process, against 2-16 samples/s for
-  shuffled random access (higher when the video has frequent keyframes). Keep `VideoFrames` for validation and debugging.
-- Random access seeks to the nearest keyframe instead of decoding from the start, but only after a one-off check
-  (about 1 s per video per process) that seeking returns exactly the frames sequential decoding does. OpenCV's seeking
-  is exact for ordinary constant-frame-rate files, and measurably wrong on variable-frame-rate video (about 3 in 4
-  frames off by several frames in our test), so those files, and any file that fails the check, fall back to slow
-  sequential decoding with a warning. `vidlabel check-video my_dataset clip --seek` tests a file more thoroughly.
-  Effect on a 10 minute 360p clip: reading frame 17000 took 3.8 s without seeking and 0.01 s with it.
-- Works without PyTorch too: `FrameSamples` returns NumPy arrays (`samples.reader(video_id).read(frame)` for pixels,
-  `samples.sample(video_id, frame, image)` for a full sample), so it plugs into JAX, TensorFlow or plain loops.
-- Augmentation is yours: pass `transform=fn` (sample in, sample out) and keep boxes consistent with the image.
-
-## Masks
-
-Stored losslessly as: crop to the mask's bounding box, bit-pack rows, zstd (`bitpack_zstd`). In benchmarks this was
-0.64-0.84x the size of COCO RLE with about 6x faster decoding. COCO RLE can be converted with `masks.from_coco_rle` /
-`masks.to_coco_rle` but is never stored. A smaller, slower arithmetic-coded codec is a possible future addition
-(`mask_codec` is a per-row column, so codecs can mix).
+| | |
+|---|---|
+| [Getting started](docs/getting-started.md) | install, first dataset, validate, build |
+| [Concepts](docs/concepts.md) | columns, coordinates and rotation, origin, tracks, releases |
+| [Views](docs/views.md) | several crops of one video |
+| [Masks](docs/masks.md) | the codec and helpers |
+| [Training](docs/training.md) | from a release to batches |
+| [Writing a converter](docs/converters.md) | import from and export to other formats |
+| [Command line](docs/cli.md) · [Python API](docs/python-api.md) | reference, generated from the code |
+| [Specification](docs/SPEC.md) | the file format, with every validation code |
+| [Design decisions](docs/design-decisions.md) | why it is this way, what was measured, what is open |
+| [Troubleshooting and FAQ](docs/faq.md) | common problems |
 
 ## Status
 
-v0.1, early. Tested: spec, mask codec, read/write/validate, views (coordinate conversion, inside-view checks), build + clip reads, CLI, frame reading and preview on real H.264,
-PyTorch loader (map-style and streaming, DataLoader workers with fork and spawn).
-**Not yet verified:** Parquet-vs-Lance speed at scale, multi-writer conflicts (one writer per video at a time for now),
-the loader at large scale (many videos, long videos, multi-GPU), variable-frame-rate video in real datasets.
+Version 0.4.0, pre-release; the name is provisional and nothing is on PyPI yet. Tested: spec and validator, reading and
+writing, views, masks, releases, the command line, frame reading and previews on real H.264 video, and the PyTorch loader.
+**Not yet verified:** Parquet against other storage at scale, several people editing one video at once, the loader on very
+large datasets or many GPUs, variable-frame-rate video in real datasets. There are **no importers or exporters** for other
+formats on purpose; [the converter guide](docs/converters.md) shows how to write one.
 
-See `docs/SPEC.md` for the format. MIT licensed.
+MIT licensed. Contributions: see [CONTRIBUTING.md](CONTRIBUTING.md).

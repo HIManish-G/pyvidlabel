@@ -28,6 +28,7 @@ def _as_bool2d(mask) -> np.ndarray:
 
 
 def encode(mask) -> bytes:
+    """Encode a boolean (H, W) array: crop to its bounding box, bit-pack the rows, zstd-compress. Lossless."""
     m = _as_bool2d(mask)
     H, W = m.shape
     rows, cols = m.any(axis=1), m.any(axis=0)
@@ -118,6 +119,7 @@ def from_coco_rle(rle: dict) -> np.ndarray:
 
 
 def to_coco_rle(mask, compressed: bool = False) -> dict:
+    """A boolean mask as a COCO run-length dict (`counts`, `size`); `compressed=True` gives the compact string form."""
     m = _as_bool2d(mask)
     h, w = m.shape
     flat = m.ravel(order="F").astype(np.int8)

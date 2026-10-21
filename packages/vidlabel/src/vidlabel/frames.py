@@ -165,11 +165,11 @@ class FrameReader:
     Reading forwards only decodes what is in between. Asking for an earlier frame, or one far ahead, normally means
     decoding from the start of the file; `seek` makes that cheap by jumping to the nearest keyframe first:
 
-      seek="auto"    (default) seek only if it has been verified for this file: not variable frame rate, and the frames
-                     returned after seeking are identical to sequential decoding at a few test positions (checked once
-                     per file per process, a short decode). Otherwise decode sequentially, with a warning.
-      seek="off"     never seek.
-      seek="always"  seek without checking (for tests and for `seek_mismatches`).
+    - `seek="auto"` (default): seek only if it has been verified for this file: not variable frame rate, and the frames
+      returned after seeking are identical to sequential decoding at a few test positions (checked once per file per
+      process, a short decode). Otherwise decode sequentially, with a warning.
+    - `seek="off"`: never seek.
+    - `seek="always"`: seek without checking (for tests and for `seek_mismatches`).
 
     For training prefer `VideoStream`, which reads each video front to back and never needs to seek.
     Not thread-safe; use one reader per process or thread.
@@ -234,6 +234,7 @@ class FrameReader:
         return _display_frame(bgr, self.meta, self._cap_rotates, self.view)
 
     def close(self) -> None:
+        """Release the open video file. Safe to call twice; the reader reopens it on the next `read`."""
         if self._cap is not None:
             self._cap.release()
             self._cap = None
@@ -252,6 +253,7 @@ class FrameReader:
 
 
 def read_frame(path: str | Path, index: int, meta: VideoMetadata, *, view: View | None = None) -> np.ndarray:
+    """One frame, RGB, displayed orientation. Decodes from the start of the video: use `read_frames` or `FrameReader` for many."""
     for _, f in read_frames(path, [index], meta, view=view):
         return f
     raise IndexError(index)  # pragma: no cover

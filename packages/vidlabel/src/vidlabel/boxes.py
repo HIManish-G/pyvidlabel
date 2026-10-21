@@ -43,3 +43,26 @@ def convert_boxes(boxes, src: str = "xyxy", dst: str = "xyxy", *, size: tuple[in
     if dst_normalized:
         out = out / scale
     return out.astype(np.float32)
+
+
+def rotate_boxes(boxes, rotation: int, stored_size: tuple[int, int]) -> np.ndarray:
+    """Move (N, 4) `xyxy` boxes from the stored frame to the displayed orientation of a rotated video.
+
+    `rotation` is the video's clockwise rotation (0, 90, 180 or 270, as in VideoMetadata.rotation) and `stored_size` is
+    (width, height) of the stored frame. Annotations in a vidlabel dataset use the displayed orientation, so a source that
+    drew boxes on the unrotated stored frame needs this before `add_annotations`. x1/y1 stay exclusive.
+    """
+    if rotation not in (0, 90, 180, 270):
+        raise ValueError("rotation must be 0, 90, 180 or 270")
+    W, H = stored_size
+    b = np.asarray(boxes, dtype=np.float64).reshape(-1, 4)
+    x0, y0, x1, y1 = b.T
+    if rotation == 90:
+        out = np.stack([H - y1, x0, H - y0, x1], axis=1)
+    elif rotation == 180:
+        out = np.stack([W - x1, H - y1, W - x0, H - y0], axis=1)
+    elif rotation == 270:
+        out = np.stack([y0, W - x1, y1, W - x0], axis=1)
+    else:
+        out = b
+    return out.astype(np.float32)
