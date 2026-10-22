@@ -107,7 +107,7 @@ are no locks ([design decisions](design-decisions.md#one-writer-per-video-no-loc
 **Do I get the same data every run?** With `release="<id>"`, yes: the same rows and the same class indices. `release=None`
 reads the live annotations and can change.
 
-**Can I do class-balanced or weighted sampling?** Not built in yet ([training](training.md#not-built-yet)).
+**Can I do class-balanced or weighted sampling?** Choosing the frames is up to you: draw any list, with any weights, and `samples.plan_reads` reads it cheaply, decoding each keyframe interval once ([training](training.md#reading-a-list-of-frames-you-chose-readplan)).
 
 ## Scope
 

@@ -173,6 +173,74 @@ automatically (`VideoFrames.__getitems__`), grouping the batch by video. The gai
 keyframe interval, which is why the table shows 1.2x at 8 frames and 4.8x at 120 for a video with only 12 intervals. Large
 batches from few videos benefit most; a batch of 8 frames from 8 different videos benefits not at all.
 
+### Reading a list of frames you chose: `ReadPlan`
+
+Which frames to train on, and how likely each is, is your decision: uniform, weighted by class, hand-picked, repeated, drawn
+fresh every epoch. vidlabel does not pick for you. What it does is make *any* such list cheap to read. `FrameSamples.plan_reads`
+takes the list and arranges the reading: the frames of one video are grouped by keyframe interval into chunks, read in increasing
+order so every interval is decoded once, and a frame requested several times is decoded once and yields one sample per request.
+The chunks (not single frames) are what gets shuffled each epoch and split between workers and ranks.
+
+<!-- doctest -->
+```python
+import numpy as np
+from vidlabel.readplan import ReadPlan
+from vidlabel_spec import FrameIndex
+
+# A video of 600 frames with a keyframe every 100 (normally read from the file by `vidlabel index`).
+index = FrameIndex(timebase={"num": 1, "den": 1000}, pts=[i * 40 for i in range(600)], keyframes=list(range(0, 600, 100)))
+
+rng = np.random.default_rng(0)
+requests = [("clip", int(f)) for f in rng.integers(0, 600, 200)]   # any list you like, in any order, repeats allowed
+plan = ReadPlan(requests, indexes={"clip": index}, seed=0)
+
+summary = plan.summary()
+print(summary)
+assert summary["samples"] == 200 and summary["chunks"] == 6
+assert summary["est_decoded_frames"] <= 600 < summary["est_decoded_frames_one_by_one"]   # each interval once, not once per request
+
+first, second = plan.shard(epoch=0, shard=0, num_shards=2), plan.shard(epoch=0, shard=1, num_shards=2)
+assert sum(c.n_samples for c in first + second) == 200                                   # every sample goes to exactly one worker
+assert plan.order(0) != plan.order(1)                                                    # a new chunk order every epoch
+```
+
+With a dataset, build it from positions in `samples.index` (what `numpy.random.Generator.choice(len(samples), size, p=weights)`
+returns) or from `(video_id, frame)` pairs, and run it:
+
+```python
+plan = samples.plan_reads(positions, seed=0)             # positions drawn however you like
+print(plan.summary())                                    # estimated frames decoded: this plan vs reading one at a time
+
+for sample in samples.iter_plan(plan, epoch=0, shuffle_buffer=64):    # NumPy samples, no framework needed
+    ...
+
+stream = PlannedStream(samples, plan, shuffle_buffer=64)  # PyTorch: an IterableDataset for a DataLoader (vidlabel.torch_data)
+stream.set_epoch(epoch)                                   # a new chunk order each epoch, reproducible from seed and epoch
+```
+
+- **Every request is produced exactly once per epoch**, whatever the number of workers and ranks; shards differ in size by at
+  most one chunk, and `plan.shard_sizes(epoch, num_shards)` shows the split (distributed training wants equal sizes). Use
+  several times more chunks than workers (`plan.summary()["chunks"]`), as a video with few keyframe intervals is few chunks.
+- **Order.** Inside a chunk frames come in increasing order, so without `shuffle_buffer` neighbouring samples are close in time.
+  `shuffle_buffer` mixes them by holding that many decoded frames in memory (about 2.7 MB each at 720p); it trades memory for variety.
+- **Videos without a frame index** are cut into blocks of 250 frames instead of real keyframe intervals (`block=` changes it), so
+  the cost estimate for them is approximate. `vidlabel index` fixes that.
+- **Frames nobody annotated can be requested**: they come back with empty targets. Whether and how often to include them is your choice.
+- The plan depends only on the requests, the frame indexes, `seed` and the epoch, so the same inputs give the same order on any machine.
+
+Measured on a 720p clip with 3000 frames (12 keyframe intervals), one process, using an arbitrary skewed draw with repeats:
+
+| draws (distinct frames) | one at a time | as a plan | estimated frames decoded |
+|---|---|---|---|
+| 100 (77) | 6.0 per second | 22 per second | 11,440 to 2,362 |
+| 300 (157) | 5.7 per second | 46 per second | 33,480 to 2,802 |
+| 1,000 (271) | not timed (about 3 minutes) | 117 per second | 111,960 to 2,882 |
+| 3,000 (300) | not timed | 317 per second | 335,200 to 2,892 |
+
+The plan decodes each interval at most once, so its cost is capped by the length of the video however many draws there are,
+while reading one at a time pays a keyframe interval's decoding for every draw. Repeated draws of a frame come from one decode,
+which is part of why the larger rows are fast. Real footage and hardware will change the absolute numbers.
+
 ### Making random access fast
 
 If you need uniform random sampling, make the frames cheap to reach. `vidlabel check-video my_dataset clip` shows the keyframe
@@ -203,12 +271,11 @@ in its pixels and only that view's annotations. Use one `FrameSamples` per view 
 Pass `transform=fn` to `VideoStream` or `VideoFrames`: it receives the sample dict (as tensors) and returns one. Anything that
 changes the image geometry (flips, crops, resizes) must change `boxes` and `masks` to match; vidlabel does not do this for you.
 
-## Not built yet
+## Choosing frames each epoch
 
-`FrameSamples` builds one fixed list of `(video, frame)` pairs. There is no built-in per-epoch plan for class-balanced or
-weighted sampling. The intended shape is to pick the frames from the table first, then read them in sorted order per
-video, which gets arbitrary sampling at streaming speed. Until then, narrow what is sampled with `videos=`, `labels=`, `origins=`,
-`min_confidence=` and `stride=`, or write your own loop over the table and use `samples.reader()` and `samples.sample()` for the pixels and targets.
+`FrameSamples` builds one fixed list of `(video, frame)` pairs. Class-balanced, weighted or per-epoch sampling is deliberately left to
+you: draw the frames however your data and model need, then give the list to [`plan_reads`](#reading-a-list-of-frames-you-chose-readplan)
+to read it cheaply. To narrow the fixed list instead, use `videos=`, `labels=`, `origins=`, `min_confidence=` and `stride=`.
 
 ## Running on Windows, macOS and Linux
 

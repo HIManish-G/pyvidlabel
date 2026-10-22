@@ -354,6 +354,39 @@ frames_of(video_id: str) -> list[int]
 
 The frame numbers sampled from one video, in order.
 
+#### `vidlabel.samples.FrameSamples.iter_plan`
+
+```python
+iter_plan(
+    plan: ReadPlan,
+    *,
+    epoch: int = 0,
+    shard: int = 0,
+    num_shards: int = 1,
+    shuffle_buffer: int = 0,
+    max_open: int = 4,
+) -> Iterator[dict]
+```
+
+Yield the samples of one shard of one epoch of `plan` (NumPy samples, like `sample`), reading each keyframe interval once.
+
+Chunks come in the plan's order for this `epoch`; frames inside a chunk are read in increasing order. A frame requested
+several times is decoded once and yields one sample per request. `shuffle_buffer` (samples held in memory, each a whole
+decoded frame) mixes neighbouring frames; 0 yields them as read. `max_open` videos are kept open at a time. For several
+workers or ranks, give each its own `shard` out of `num_shards`: together they yield every sample exactly once.
+
+#### `vidlabel.samples.FrameSamples.plan_reads`
+
+```python
+plan_reads(requests: Iterable, *, seed: int = 0, block: int = 250) -> ReadPlan
+```
+
+Arrange the reading of a list of frames you chose, so each keyframe interval is decoded once (see `ReadPlan`).
+
+`requests` holds `(video_id, frame)` pairs or integer positions in `self.index` (what `numpy.random.Generator.choice(len(samples), ...)`
+returns), in any order, with repeats allowed. Which frames to request, and how likely each is, is entirely up to you.
+Videos without a frame index are cut into blocks of `block` frames. Run the plan with `iter_plan` or `PlannedStream`.
+
 #### `vidlabel.samples.FrameSamples.reader`
 
 ```python
@@ -396,9 +429,84 @@ video_path(video_id: str) -> Path
 
 Where the video file is on this machine (recorded paths first, then `roots`). Raises FileNotFoundError.
 
+### Reading plans (`vidlabel.readplan`)
+
+### `vidlabel.readplan.ReadPlan`
+
+```python
+vidlabel.readplan.ReadPlan(
+    requests: Iterable[tuple[str, int]],
+    *,
+    indexes: Mapping[str, FrameIndex | None] | None = None,
+    frame_counts: Mapping[str, int] | None = None,
+    block: int = 250,
+    seed: int = 0,
+)
+```
+
+A reading plan for a list of requests. Build it with `FrameSamples.plan_reads(...)`, or directly from `(video_id, frame)` pairs.
+
+- `requests`: `(video_id, frame)` pairs, in any order, repeats allowed (each repeat gives one more sample).
+- `indexes`: video id -> its `FrameIndex` (or None). Videos without one are cut into blocks of `block` frames,
+  which is only an approximation of the real keyframes, so costs for them are estimates.
+- `frame_counts`: video id -> number of frames; if given, requests outside the video raise ValueError.
+- `seed`: makes the chunk order and its sharding reproducible; together with the epoch it fixes the order of every epoch.
+
+#### `vidlabel.readplan.ReadPlan.order`
+
+```python
+order(epoch: int = 0) -> list[Chunk]
+```
+
+All chunks in this epoch's order: the same for a given seed and epoch, different between epochs.
+
+#### `vidlabel.readplan.ReadPlan.shard`
+
+```python
+shard(epoch: int = 0, shard: int = 0, num_shards: int = 1) -> list[Chunk]
+```
+
+The chunks one worker (or rank) reads in this epoch, in reading order. Every chunk belongs to exactly one shard,
+whatever `num_shards` is, and shards get nearly the same number of samples (they differ by at most one chunk's worth).
+
+#### `vidlabel.readplan.ReadPlan.shard_sizes`
+
+```python
+shard_sizes(epoch: int = 0, num_shards: int = 1) -> list[int]
+```
+
+Samples per shard, to see how even the split is (distributed training wants equal numbers).
+
+#### `vidlabel.readplan.ReadPlan.summary`
+
+```python
+summary() -> dict[str, int]
+```
+
+`samples`, `distinct_frames`, `videos`, `chunks`, and the estimated frames decoded per epoch under this plan
+(`est_decoded_frames`) against reading the same requests one at a time (`est_decoded_frames_one_by_one`).
+
+#### `vidlabel.readplan.ReadPlan.video_ids` (property)
+
+### `vidlabel.readplan.Chunk`
+
+```python
+vidlabel.readplan.Chunk(
+    video_id: str,
+    start: int,
+    frames: tuple[int, ...],
+    repeats: tuple[int, ...],
+    cost: int,
+) -> None
+```
+
+The requested frames of one video inside one keyframe interval.
+
+#### `vidlabel.readplan.Chunk.n_samples` (property)
+
 ### PyTorch (`vidlabel.torch_data`, needs `vidlabel[torch]`)
 
-`VideoStream` and `VideoFrames` are documented in [training](training.md); `collate_frames(batch)` batches samples (stacking images that share a size) and `to_tensors(sample)` converts a NumPy sample to tensors (image as uint8 CHW).
+`VideoStream`, `VideoFrames` and `PlannedStream` are documented in [training](training.md); `collate_frames(batch)` batches samples (stacking images that share a size) and `to_tensors(sample)` converts a NumPy sample to tensors (image as uint8 CHW).
 
 ## Frames and previews (need OpenCV: `vidlabel[video]`)
 

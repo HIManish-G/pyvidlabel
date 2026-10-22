@@ -136,7 +136,7 @@ def api_page() -> str:
     import vidlabel
     import vidlabel_spec
     import importlib
-    from vidlabel import boxes, cache, frames, masks, preview, probe, samples, validate
+    from vidlabel import boxes, cache, frames, masks, preview, probe, readplan, samples, validate
     build = importlib.import_module("vidlabel.build")   # `vidlabel.build` the attribute is the function, not the module
     from vidlabel.dataset import Dataset
 
@@ -152,8 +152,11 @@ def api_page() -> str:
     out += _class_section(build.Compiled, "vidlabel.build.Compiled")
     out += ["## Training samples", ""]
     out += _class_section(samples.FrameSamples, "vidlabel.samples.FrameSamples")
+    out += ["### Reading plans (`vidlabel.readplan`)", ""]
+    out += _class_section(readplan.ReadPlan, "vidlabel.readplan.ReadPlan")
+    out += _class_section(readplan.Chunk, "vidlabel.readplan.Chunk")
     out += ["### PyTorch (`vidlabel.torch_data`, needs `vidlabel[torch]`)", ""]
-    out += ["`VideoStream` and `VideoFrames` are documented in [training](training.md); `collate_frames(batch)` batches samples "
+    out += ["`VideoStream`, `VideoFrames` and `PlannedStream` are documented in [training](training.md); `collate_frames(batch)` batches samples "
             "(stacking images that share a size) and `to_tensors(sample)` converts a NumPy sample to tensors (image as uint8 CHW).", ""]
     out += ["## Frames and previews (need OpenCV: `vidlabel[video]`)", ""]
     for n in ("read_frames", "read_frame", "check_video", "crop_to_view", "seek_mismatches"):

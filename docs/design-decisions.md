@@ -143,6 +143,17 @@ pixels, and `check-video` prints the one-line `ffmpeg` command for people who wa
 *which* frames to train on is a question for the annotation table and needs no video access, so sampling strategies belong
 on the table side (see [open questions](#open-questions)).
 
+## Choosing frames is the user's job; reading them cheaply is ours
+
+Class balance, weighting, how many unannotated frames to include and how long an epoch is depend on the data and the model, so the
+library does not decide them. `ReadPlan` takes any list of `(video, frame)` requests and only arranges the reading: chunks by
+keyframe interval, increasing order inside a chunk, repeated frames decoded once, chunks (not frames) shuffled per epoch and
+shared between workers with nearly equal sample counts. *Why chunks:* a keyframe interval is the smallest unit that is cheap to
+read on its own, so it is also the natural unit to shuffle and to hand to a worker. *Trade-offs:* samples inside a chunk are
+neighbours in time until a shuffle buffer mixes them; a video with few keyframe intervals is few chunks, which limits how evenly
+work can be split; videos without a frame index are cut into 250-frame blocks, which only approximates their real keyframes. How
+much the reduced mixing matters for training quality is not measured.
+
 ## No importers or exporters in the library
 
 *Why:* every source format differs in coordinates, frame numbering, naming, tracks and time spans; supporting each properly
@@ -160,8 +171,8 @@ half-written file. A real multi-writer story (locks, or merging) is not designed
 - **Parquet versus other storage at scale.** No completed benchmark against Lance or others; speed at millions of rows and
   many files is unmeasured.
 - **Several editors at once.** Nothing prevents two writers on one video from overwriting each other; a locking or merge story is needed.
-- **Sampling plans.** Per-epoch class-balanced or weighted sampling from the table, followed by reading frames in sorted order,
-  is the intended design and is not built.
+- **Sampling recipes.** Which frames to draw is left to users on purpose, and reading a drawn list cheaply is built (`ReadPlan`). Worked
+  examples of common choices (class balance, weights) could be added to the docs; nothing about them is built into the library.
 - **The loader at scale.** Many videos, hour-long videos, many GPUs and remote storage are untested.
 - **Variable-frame-rate video in real datasets.** With a frame index it can be seeked and every frame is checked; tested on a synthetic variable-rate
   H.264 file only. The index relies on OpenCV reporting each frame's timestamp, which held for H.264 in MP4 in our tests; other codecs and

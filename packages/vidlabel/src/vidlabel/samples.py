@@ -14,8 +14,10 @@ A sample is a dict of NumPy arrays:
 """
 from __future__ import annotations
 
+import random
+from collections import OrderedDict
 from pathlib import Path
-from typing import Sequence
+from typing import Iterable, Iterator, Sequence
 
 import numpy as np
 import pyarrow as pa
@@ -28,6 +30,7 @@ from .build import Compiled
 from .dataset import Dataset
 from .cache import CachedReader, FrameCache
 from .frames import FrameReader, crop_mask_to_view
+from .readplan import FALLBACK_BLOCK, ReadPlan
 
 _BASE_COLUMNS = ["annotation_id", "video_id", "start_frame", "end_frame", "kind", "label", "track_id",
                  "x0", "y0", "x1", "y1", "view_id", "origin", "confidence"]
@@ -181,6 +184,52 @@ class FrameSamples:
         if self.cache is not None and self.cache.usable(video_id, meta):
             return CachedReader(self.cache, video_id, meta, self.view, from_video)
         return from_video()
+
+    def plan_reads(self, requests: Iterable, *, seed: int = 0, block: int = FALLBACK_BLOCK) -> ReadPlan:
+        """Arrange the reading of a list of frames you chose, so each keyframe interval is decoded once (see `ReadPlan`).
+
+        `requests` holds `(video_id, frame)` pairs or integer positions in `self.index` (what `numpy.random.Generator.choice(len(samples), ...)`
+        returns), in any order, with repeats allowed. Which frames to request, and how likely each is, is entirely up to you.
+        Videos without a frame index are cut into blocks of `block` frames. Run the plan with `iter_plan` or `PlannedStream`."""
+        pairs = [self.index[int(r)] if isinstance(r, (int, np.integer)) else (str(r[0]), int(r[1])) for r in requests]
+        videos = {v for v, _ in pairs}
+        return ReadPlan(pairs, indexes={v: self.ds.frame_index(v) for v in videos},
+                        frame_counts={v: self.ds.video(v).frame_count for v in videos}, seed=seed, block=block)
+
+    def iter_plan(self, plan: ReadPlan, *, epoch: int = 0, shard: int = 0, num_shards: int = 1, shuffle_buffer: int = 0,
+                  max_open: int = 4) -> Iterator[dict]:
+        """Yield the samples of one shard of one epoch of `plan` (NumPy samples, like `sample`), reading each keyframe interval once.
+
+        Chunks come in the plan's order for this `epoch`; frames inside a chunk are read in increasing order. A frame requested
+        several times is decoded once and yields one sample per request. `shuffle_buffer` (samples held in memory, each a whole
+        decoded frame) mixes neighbouring frames; 0 yields them as read. `max_open` videos are kept open at a time. For several
+        workers or ranks, give each its own `shard` out of `num_shards`: together they yield every sample exactly once."""
+        rng = random.Random(plan.seed * 1_000_003 + epoch * 9_973 + shard * 31 + 7)
+        readers: OrderedDict[str, object] = OrderedDict()
+        buf: list[dict] = []
+        try:
+            for chunk in plan.shard(epoch, shard, num_shards):
+                reader = readers.pop(chunk.video_id, None) or self.reader(chunk.video_id)
+                readers[chunk.video_id] = reader                      # most recently used last
+                while len(readers) > max_open:
+                    readers.popitem(last=False)[1].close()
+                for frame, repeats in zip(chunk.frames, chunk.repeats):
+                    image = reader.read(frame)
+                    for k in range(repeats):
+                        sample = self.sample(chunk.video_id, frame, image if k == repeats - 1 else image.copy())
+                        if shuffle_buffer <= 0:
+                            yield sample
+                            continue
+                        buf.append(sample)
+                        if len(buf) >= shuffle_buffer:
+                            j = rng.randrange(len(buf))
+                            buf[j], buf[-1] = buf[-1], buf[j]
+                            yield buf.pop()
+            rng.shuffle(buf)
+            yield from buf
+        finally:
+            for r in readers.values():
+                r.close()
 
     def _active(self, video_id: str, frame: int) -> list[dict]:
         rows = [self._rows[i] for i in self._points.get((video_id, frame), [])]

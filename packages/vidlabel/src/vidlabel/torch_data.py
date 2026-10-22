@@ -30,6 +30,7 @@ except ImportError as e:  # pragma: no cover
     raise ImportError('PyTorch is needed for this module. Install it with: pip install "vidlabel[torch]" '
                       "(or follow https://pytorch.org/get-started for your GPU)") from e
 
+from .readplan import ReadPlan
 from .samples import FrameSamples
 
 
@@ -54,6 +55,18 @@ def collate_frames(batch: list[dict]) -> dict:
         out["image"] = torch.stack(out["image"])
         out["frame_labels"] = torch.stack(out["frame_labels"])
     return out
+
+
+def _shard_of(rank: int | None, world_size: int | None) -> tuple[int, int]:
+    """(shard, number of shards) for this DataLoader worker in this distributed rank."""
+    if rank is None or world_size is None:
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            rank, world_size = torch.distributed.get_rank(), torch.distributed.get_world_size()
+        else:
+            rank, world_size = 0, 1
+    info = get_worker_info()
+    wid, nw = (info.id, info.num_workers) if info else (0, 1)
+    return rank * nw + wid, world_size * nw
 
 
 class VideoFrames(_Dataset):
@@ -119,15 +132,7 @@ class VideoStream(_IterableDataset):
         return len(self.samples)
 
     def _shard(self) -> tuple[int, int]:
-        rank, world = self.rank, self.world_size
-        if rank is None or world is None:
-            if torch.distributed.is_available() and torch.distributed.is_initialized():
-                rank, world = torch.distributed.get_rank(), torch.distributed.get_world_size()
-            else:
-                rank, world = 0, 1
-        info = get_worker_info()
-        wid, nw = (info.id, info.num_workers) if info else (0, 1)
-        return rank * nw + wid, world * nw
+        return _shard_of(self.rank, self.world_size)
 
     def __iter__(self) -> Iterator[dict]:
         shard, total = self._shard()
@@ -155,3 +160,32 @@ class VideoStream(_IterableDataset):
         rng.shuffle(buf)
         for s in buf:
             yield emit(s)
+
+
+class PlannedStream(_IterableDataset):
+    """Streaming dataset over a `ReadPlan`: you choose the frames (any list, any weights, repeats allowed) and the plan makes
+    reading them cheap, decoding each keyframe interval once. See `vidlabel.readplan`.
+
+    Each epoch visits the plan's chunks in a new order (`set_epoch(n)`, deterministic for a given seed and epoch) and splits
+    them between DataLoader workers and distributed ranks, so every sample is produced exactly once per epoch across all of
+    them. `shuffle_buffer` holds that many decoded frames in memory to mix neighbours; 0 yields them as read. Use a few
+    times more chunks than workers (`plan.summary()["chunks"]`) so the split is even."""
+
+    def __init__(self, samples: FrameSamples, plan: ReadPlan, transform: Callable[[dict], dict] | None = None, *,
+                 shuffle_buffer: int = 0, max_open: int = 4, rank: int | None = None, world_size: int | None = None):
+        self.samples, self.plan, self.transform = samples, plan, transform
+        self.shuffle_buffer, self.max_open = shuffle_buffer, max_open
+        self.rank, self.world_size, self.epoch = rank, world_size, 0
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+    def __len__(self) -> int:  # total over all workers; each worker sees its share
+        return len(self.plan)
+
+    def __iter__(self) -> Iterator[dict]:
+        shard, total = _shard_of(self.rank, self.world_size)
+        for s in self.samples.iter_plan(self.plan, epoch=self.epoch, shard=shard, num_shards=total,
+                                        shuffle_buffer=self.shuffle_buffer, max_open=self.max_open):
+            s = to_tensors(s)
+            yield self.transform(s) if self.transform else s
