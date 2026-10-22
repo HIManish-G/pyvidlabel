@@ -96,14 +96,46 @@ dropping it for good.
 `build` writes a sorted table whose id is a hash of its contents, plus a snapshot of `vocab.json`. *Why:* a training run that
 records the id can be reproduced exactly, and class indices cannot drift when labels are added later.
 
-## Frames are read with OpenCV, sequentially, and seeking is verified
+## Frames are read with OpenCV, and every frame is checked
 
-Decoding is sequential by default because that is frame-accurate. Seeking to a keyframe is far faster but OpenCV's seek was
-measured to be exact on constant-frame-rate files and **wrong on variable-frame-rate video** (about three frames in four off
-by several frames) and on a broken-start MPEG-TS file, which would silently misalign boxes. So seeking is used only after a
-one-off pixel comparison with sequential decoding, and never for videos flagged variable-rate.
-*Why not a different decoder:* a second decoder can produce slightly different pixels (colour conversion) than the one used
-elsewhere, which is a reproducibility problem of its own.
+Decoding is sequential by default because that is frame-accurate. Seeking to a keyframe is far faster, but OpenCV's
+seek-by-frame-number was measured to be exact on constant-frame-rate files and **wrong on variable-frame-rate video** (29 of 40
+jumps landed on the wrong frame) and on a broken-start MPEG-TS file, which would silently misalign boxes. Without a frame
+index, seeking is therefore used only after a one-off pixel comparison with sequential decoding, and never for videos flagged
+variable-rate. *Why not a different decoder:* a second decoder can produce slightly different pixels (colour conversion) than the
+one used elsewhere, which is a reproducibility problem of its own.
+
+## A frame index, not stored patches
+
+Random access is slow because of how video is compressed, not because we cannot find the keyframe: finding it takes almost
+nothing, decoding up to the frame takes ~125 frames on average at a keyframe interval of 250. Two ideas that look like they
+should help do not:
+
+- **Storing a byte offset or "better seek position"** only replaces the cheap part. The decode cost remains.
+- **Storing a patch from the nearest keyframe to a frame** (so the frames in between could be skipped): the file does not
+  contain such a patch (every frame depends on a few earlier ones, which depend on others), so making one means decoding up to
+  the frame, and storing it means storing image data about as large as the frame itself. That is storing pixels in a harder-to-read
+  form. Saving the decoder's internal state instead means saving several raw reference frames (about 1.4 MB each at 720p) in a
+  decoder-specific format.
+
+What a per-frame index *does* give: the keyframe positions (so reads can be planned: decode each keyframe interval once, jump
+only when it saves work), and the timestamp of every frame, so a seek can be **checked** (the decoder's timestamp must equal
+the stored one) and so variable-frame-rate video, where frame number and time disagree, can be seeked by time. Other video
+tooling made the same choice: TorchCodec's "exact" seek mode scans the file once to build the same frame and keyframe index.
+Measured effect (one machine, synthetic 720p clip): a single random read is unchanged (166 ms against 173 ms); batches of 8, 32
+and 120 frames read through `read_many` run 1.2x, 1.8x and 4.8x faster than one at a time. The index is stored as its own optional
+file (`frame_index.json`), not in `metadata.json`, so the metadata stays small and readable for long videos.
+
+## Faster random access is derived data, not part of the dataset
+
+When uniform random sampling matters, the options are re-encoding the video with a keyframe every 30 frames (about 8 times less
+decoding, bigger files, a different file) or caching the decoded frames a run will use (a file read per frame: about 3 ms for
+JPEG against about 170 ms to seek). The cache is built from the annotation table, because the table already says exactly which
+frames training needs. It is kept **outside** the dataset, can be deleted and rebuilt any time, and records the content hash of
+the video it came from. *Why not store frames in the dataset:* videos are large, already stored somewhere, and the dataset's
+promise is that it never holds pixels; a derived cache gives the speed without breaking that. A *proxy video* (a re-encoded copy
+registered next to the original) was considered and not built: it would be a second file with its own hash and slightly different
+pixels, and `check-video` prints the one-line `ffmpeg` command for people who want one.
 
 ## Training reads by streaming
 
@@ -131,8 +163,11 @@ half-written file. A real multi-writer story (locks, or merging) is not designed
 - **Sampling plans.** Per-epoch class-balanced or weighted sampling from the table, followed by reading frames in sorted order,
   is the intended design and is not built.
 - **The loader at scale.** Many videos, hour-long videos, many GPUs and remote storage are untested.
-- **Variable-frame-rate video in real datasets.** Handled safely (sequential reading, flagged by `is_vfr`), but only tested on synthetic files.
+- **Variable-frame-rate video in real datasets.** With a frame index it can be seeked and every frame is checked; tested on a synthetic variable-rate
+  H.264 file only. The index relies on OpenCV reporting each frame's timestamp, which held for H.264 in MP4 in our tests; other codecs and
+  containers are unmeasured (a mismatch falls back to sequential decoding with a warning, never to a wrong frame).
+- **Frame cache at scale.** Measured on a few hundred frames of one clip. Build time, disk use and read speed on millions of frames or network storage are unknown.
 - **Temporal mask coding and the arithmetic codec.** Deferred; see the caveats above.
 - **Name and publishing.** "vidlabel" is a working name and nothing is on PyPI yet.
-- **Spec strictness over time.** The track rules added in this version make `validate` stricter than before (a duplicate track in
+- **Spec strictness over time.** The track rules added in 0.5.0 make `validate` stricter than before (a duplicate track in
   a frame is now an error). Datasets written by earlier versions that contain such duplicates need fixing.

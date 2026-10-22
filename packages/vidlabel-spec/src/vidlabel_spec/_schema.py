@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from ._columns import ANNOTATION_COLUMNS
-from ._models import SPEC_VERSION, Manifest, Release, VideoMetadata, View, Vocab
+from ._models import SPEC_VERSION, FrameIndex, Manifest, Release, VideoMetadata, View, Vocab
 
 
 def json_schema() -> dict:
@@ -13,6 +13,7 @@ def json_schema() -> dict:
         "spec_version": SPEC_VERSION,
         "manifest": Manifest.model_json_schema(),
         "video_metadata": VideoMetadata.model_json_schema(),
+        "frame_index": FrameIndex.model_json_schema(),
         "view": View.model_json_schema(),
         "vocab": Vocab.model_json_schema(),
         "release": Release.model_json_schema(),

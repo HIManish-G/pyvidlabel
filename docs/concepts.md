@@ -12,6 +12,7 @@ my_dataset/
   videos/<video_id>/
     metadata.json               facts about the video file (below)
     annotations.parquet         every annotation of this video, all kinds together
+    frame_index.json            optional: timestamp and keyframe of every frame (below)
   views/<view_id>.json          a named crop and/or frame range of one video
   compiled/<release_id>/        made by `vidlabel build`: annotations.parquet, vocab.json, release.json
   compiled/LATEST               the id of the newest release
@@ -41,6 +42,10 @@ A video is registered once and described by `metadata.json`. The video file is n
 | `content_hash` | `sha256:<hex>` of the file: detects a re-encoded or wrong file |
 | `sources` | where the file has been seen (`uri`, optional `note`): paths are *hints* and can go stale |
 | `extra` | your own data |
+
+The optional **frame index** (`frame_index.json`, made by `add-video` or `vidlabel index`) lists the timestamp of every frame and which
+frames are keyframes. It is read from the file's packet table, so it takes seconds and decodes nothing. Readers use it to seek safely
+and to plan reads; see [training](training.md#the-frame-index).
 
 `Dataset.resolve_video_path(video_id, roots)` tries each recorded source and then searches `roots` for the same file
 name, which is how a dataset moved to another machine finds its videos again (`--root` on the commands that read video).

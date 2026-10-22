@@ -1,10 +1,11 @@
-# vidlabel format, spec 0.4.0
+# vidlabel format, spec 0.5.0
 
 Authoritative definitions: `packages/vidlabel-spec` (pydantic models; `vidlabel schema` prints JSON Schema). This page is the
 normative summary; [concepts](concepts.md) explains the reasons and [design decisions](design-decisions.md) records the choices.
 
 ## Layout
 `manifest.json`, `vocab.json`, `videos/<video_id>/metadata.json`, `videos/<video_id>/annotations.parquet`,
+optional `videos/<video_id>/frame_index.json`,
 `views/<view_id>.json`, optional `compiled/<release_id>/{annotations.parquet,vocab.json,release.json}`, `compiled/LATEST`.
 IDs match `[A-Za-z0-9._-]+`.
 
@@ -55,6 +56,21 @@ applies the duplicate check against the rows already stored for the same tracks.
 Storage: Parquet, zstd, row groups of about 20,000 rows, statistics and page index on. Rows sorted by
 (`start_frame`, `annotation_id`) within a video file.
 
+## Frame index (optional)
+`videos/<video_id>/frame_index.json` describes the timing of every frame of one video, read from the container's packet table
+(no decoding; `vidlabel index` or `probe_frame_index`). One JSON object:
+
+| field | meaning |
+|---|---|
+| `timebase` | `{num, den}`: seconds per timestamp tick |
+| `pts` | one integer timestamp per frame, in display order and strictly increasing, so `pts[i]` belongs to frame `i` |
+| `keyframes` | strictly increasing frame numbers where decoding can start without earlier frames |
+| `content_hash` | hash of the file it was read from (optional); a different hash than the metadata's means the index is stale |
+
+It must have exactly `frame_count` entries. Readers use it to find the keyframe before a frame, to seek by time in
+variable-frame-rate video, and to check that the decoder returned the frame that was asked for. Everything works without it,
+only more slowly or more cautiously (see [training](training.md#the-frame-index)).
+
 ## Mask codec `bitpack_zstd`
 Header (little endian): `u8 version=1; u32 frame_h, frame_w, crop_y0, crop_x0, crop_h, crop_w` then
 `zstd(np.packbits(crop, axis=-1))`. `crop_h = crop_w = 0` means an empty mask with no payload. Lossless.
@@ -74,6 +90,8 @@ Returned by `Dataset.validate()` as `Issue(level, code, message)`; errors fail `
 | `no_manifest`, `bad_manifest` | error | `manifest.json` missing or invalid |
 | `spec_major` | error | dataset written by an incompatible spec major version |
 | `no_vocab`, `bad_vocab` | error | `vocab.json` missing or invalid |
+| `bad_frame_index`, `frame_index_length` | error | `frame_index.json` is invalid (timestamps not increasing, keyframes out of range...) or has a different number of frames than the metadata |
+| `frame_index_stale` | warning | the index was made from a different file than the metadata describes (hash differs) |
 | `bad_view`, `view_id_mismatch`, `view_video`, `view_region`, `view_labels` | error | a view file is invalid, is named differently from its `view_id`, refers to an unknown video, extends outside the video, or allows labels not in the vocabulary |
 | `manifest_views` | warning | `manifest.json` lists different views than `views/` contains |
 | `missing_video_dir`, `no_metadata`, `bad_metadata`, `video_id_mismatch` | error | a listed video has no folder or metadata, invalid metadata, or metadata naming another video |
@@ -102,3 +120,10 @@ Returned by `Dataset.validate()` as `Issue(level, code, message)`; errors fail `
 ## Editing rules (0.1)
 Each video has its own annotation file, so people working on different videos never conflict. Writes are atomic
 (temp file + rename) but not locked: one writer per video at a time. Ids are random 63-bit integers.
+
+## Versions
+- **0.5.0.** Adds the optional frame index above. Specifies `track_id` as scoped to one video and view, and adds the track
+  rules: warning `track_label_conflict`, and error `duplicate_track_in_frame` (two boxes, or two masks, of one track in one
+  frame). A dataset written by 0.4 opens unchanged (only the major version must match) but is validated against the new
+  track rules, so one that has duplicate track rows must be fixed.
+- **0.4.0.** First documented version.

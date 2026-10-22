@@ -4,7 +4,7 @@ An open, directory-based format and Python library for **video annotation data**
 boxes, masks, tracks and labels, all in one annotation table. It is meant to be the thing that sits between your
 labelling tools and your training code.
 
-> **Status:** version 0.4.0, pre-release. "vidlabel" is a working name. It is installed from a source checkout for now
+> **Status:** version 0.5.0, pre-release. "vidlabel" is a working name. It is installed from a source checkout for now
 > (nothing is published to PyPI yet). The format and the library are tested on Linux, Windows and macOS; see
 > [what is and is not verified](#what-is-and-is-not-verified).
 
@@ -30,6 +30,7 @@ my_dataset/
   videos/<video_id>/
     metadata.json               fps, frame count, size, rotation, content hash, where the file has been seen
     annotations.parquet         every annotation for this video
+    frame_index.json            optional: per-frame timestamps and keyframes, for fast and exact seeking
   views/<view_id>.json          a crop / time range of a video
   compiled/<release_id>/        sorted training table + vocabulary snapshot + release.json (made by `vidlabel build`)
 ```

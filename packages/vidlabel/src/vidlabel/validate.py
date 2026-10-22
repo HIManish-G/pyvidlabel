@@ -11,7 +11,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from pydantic import ValidationError as PydanticValidationError
-from vidlabel_spec import (COLUMN_NAMES, REQUIRED_COLUMNS, SPEC_VERSION, Kind, Manifest, MaskCodec, Origin, Status,
+from vidlabel_spec import (COLUMN_NAMES, REQUIRED_COLUMNS, SPEC_VERSION, FrameIndex, Kind, Manifest, MaskCodec, Origin, Status,
                            VideoMetadata, View, Vocab, is_valid_origin)
 
 from . import masks
@@ -322,6 +322,17 @@ def validate_dataset(path: str | Path, deep: bool = False) -> list[Issue]:
         if meta.video_id != vid:
             err("video_id_mismatch", f"videos/{vid}/metadata.json has video_id '{meta.video_id}'")
         metas[vid] = meta
+        fp = vdir / vid / "frame_index.json"
+        if fp.exists():
+            try:
+                fi = FrameIndex.model_validate_json(fp.read_text(encoding="utf-8"))
+            except (PydanticValidationError, ValueError) as e:
+                err("bad_frame_index", f"videos/{vid}/frame_index.json: {e}")
+            else:
+                if meta.frame_count and fi.frame_count != meta.frame_count:
+                    err("frame_index_length", f"videos/{vid}/frame_index.json has {fi.frame_count} frames but the metadata says {meta.frame_count}")
+                if meta.content_hash and fi.content_hash and meta.content_hash != fi.content_hash:
+                    warn("frame_index_stale", f"videos/{vid}/frame_index.json was made from a different file than the metadata describes")
         ap = vdir / vid / "annotations.parquet"
         if not ap.exists():
             continue

@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import re
+from bisect import bisect_left, bisect_right
 from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-SPEC_VERSION = "0.4.0"
+SPEC_VERSION = "0.5.0"
 
 _ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _HASH_RE = re.compile(r"^[a-z0-9]+:[0-9a-f]+$")
@@ -37,6 +38,71 @@ class VideoSource(_Strict):
     """One known location of the video file. Several may be listed; paths move, hashes don't."""
     uri: str
     note: str | None = None
+
+
+class FrameIndex(_Strict):
+    """Optional per-frame timing of one video, stored in videos/<video_id>/frame_index.json.
+
+    Read from the file's packet table (no decoding), so it is cheap to make. It lets a reader seek by timestamp, including
+    in variable-frame-rate video, check where a seek really landed, and plan reads so each keyframe interval is decoded once.
+
+    `pts` holds one presentation timestamp per frame, in `timebase` ticks, in display order (so `pts[i]` belongs to frame
+    `i`) and strictly increasing. `keyframes` lists the frame numbers where decoding can start without earlier frames.
+    """
+    content_hash: str | None = Field(default=None, description="Hash of the file this was read from; a different hash means the index is stale.")
+    timebase: Rational
+    pts: list[int] = Field(min_length=1)
+    keyframes: list[int] = Field(default_factory=list)
+
+    @field_validator("content_hash")
+    @classmethod
+    def _v_hash(cls, v: str | None) -> str | None:
+        if v is not None and not _HASH_RE.match(v):
+            raise ValueError("content_hash must look like '<algo>:<lowercase hex>'")
+        return v
+
+    @model_validator(mode="after")
+    def _v_order(self) -> "FrameIndex":
+        p, k = self.pts, self.keyframes
+        if any(b <= a for a, b in zip(p, p[1:])):
+            raise ValueError("pts must be strictly increasing (one timestamp per frame, in display order)")
+        if any(b <= a for a, b in zip(k, k[1:])):
+            raise ValueError("keyframes must be strictly increasing frame numbers")
+        if k and (k[0] < 0 or k[-1] >= len(p)):
+            raise ValueError("keyframes must be frame numbers inside the video")
+        return self
+
+    @property
+    def frame_count(self) -> int:
+        return len(self.pts)
+
+    def seconds(self, frame: int) -> float:
+        """Time of `frame` in seconds from the first frame."""
+        return (self.pts[frame] - self.pts[0]) * self.timebase.num / self.timebase.den
+
+    def frame_at(self, ticks: float, tolerance: float = 0.3) -> int | None:
+        """The frame whose timestamp is within `tolerance` ticks of `ticks` (absolute, like `pts`), or None."""
+        j = bisect_left(self.pts, ticks)
+        best = min((c for c in (j - 1, j) if 0 <= c < len(self.pts)), key=lambda c: abs(self.pts[c] - ticks), default=None)
+        return best if best is not None and abs(self.pts[best] - ticks) <= tolerance else None
+
+    def keyframe_before(self, frame: int) -> int:
+        """The last keyframe at or before `frame` (0 if the list is empty): where decoding for `frame` has to start."""
+        j = bisect_right(self.keyframes, frame)
+        return self.keyframes[j - 1] if j else 0
+
+    def decode_cost(self, frame: int) -> int:
+        """Frames that must be decoded to reach `frame` from a cold start: its distance from the previous keyframe, plus one."""
+        return frame - self.keyframe_before(frame) + 1
+
+    def interval_stats(self) -> dict[str, float]:
+        """Keyframe spacing: `min`, `median`, `max` interval in frames, and `mean_cost`, the average frames decoded to reach a random frame."""
+        k = self.keyframes or [0]
+        gaps = sorted([b - a for a, b in zip(k, k[1:])] + [len(self.pts) - k[-1]])
+        n = len(self.pts)
+        # frames in an interval of length g cost 1..g, so the mean cost is the sum of g*(g+1)/2 over intervals, divided by n
+        total = sum(g * (g + 1) // 2 for g in gaps)
+        return {"min": gaps[0], "median": gaps[len(gaps) // 2], "max": gaps[-1], "mean_cost": total / n}
 
 
 class VideoMetadata(_Strict):

@@ -33,7 +33,9 @@ vidlabel info my_dataset
 
 `add-video` runs ffprobe and records frame rate (as an exact fraction), frame count, stored size, rotation, codec, bit
 rate and a SHA-256 hash of the file. The video is **not copied**: the dataset keeps its path as a hint, and the hash lets
-anyone detect a re-encoded or wrong file later (`vidlabel check-video`).
+anyone detect a re-encoded or wrong file later (`vidlabel check-video`). It also stores a **frame index** (the timestamp and
+keyframes of every frame, read without decoding; skip it with `--no-index`, add it later with `vidlabel index`), which makes reading
+frames by number faster and safe even for variable-frame-rate video ([training](training.md#the-frame-index)).
 
 From Python, without a video file at all:
 

@@ -62,7 +62,7 @@ vidlabel build path [options]
 
 ## `add-video`
 
-Probe a video file with ffprobe and register it.
+Probe a video file with ffprobe and register it, with its frame index.
 
 ```
 vidlabel add-video path video_file [options]
@@ -77,6 +77,27 @@ vidlabel add-video path video_file [options]
 |---|---|---|
 | `--video-id` | none | Id to register it under. Default: the file name without extension. |
 | `--no-hash` | off | Skip hashing the file (faster, weaker identity). |
+| `--no-index` | off | Skip the frame index (timestamps and keyframes; see `vidlabel index`). |
+
+## `index`
+
+Make (or rebuild) the frame index of registered videos: per-frame timestamps and keyframes, read without decoding.
+
+```
+vidlabel index path video_ids... [options]
+```
+
+| argument | |
+|---|---|
+| `path` | required |
+| `video_ids` | optional |
+
+| option | default | what it does |
+|---|---|---|
+| `--video-path` | none | Video file, if the recorded path is stale (one video only). |
+| `--root` | none | Folder(s) to search for the videos by file name. |
+| `--force` / `--no-force` | off | Rebuild indexes that already exist. |
+| `--no-verify` | off | Do not check the file's hash against the registered one (faster). |
 
 ## `add-labels`
 
@@ -142,7 +163,7 @@ vidlabel preview path video_id [options]
 
 ## `check-video`
 
-Check that the video file on disk matches the metadata registered for it.
+Check that the video file on disk matches the metadata, and report how costly random access is (keyframe spacing).
 
 ```
 vidlabel check-video path video_id [options]
@@ -159,6 +180,30 @@ vidlabel check-video path video_id [options]
 | `--root` | none | Folder(s) to search for the video by file name. |
 | `--hash` / `--no-hash` | off | Also verify the content hash (reads the whole file). |
 | `--seek` / `--no-seek` | off | Also test that random-access seeking returns exactly the right frames (decodes the whole video once). |
+
+## `cache`
+
+Save the frames a training run will use as image files, so random access is a file read. The cache is derived data:
+delete and rebuild it any time. Pass it to FrameSamples(cache=...).
+
+```
+vidlabel cache path out [options]
+```
+
+| argument | |
+|---|---|
+| `path` | required |
+| `out` | required |
+
+| option | default | what it does |
+|---|---|---|
+| `--release` | `latest` | Release to take the frames from: 'latest', a release id, or 'none' for the live annotations. |
+| `--view` | none | Only the frames this view samples. |
+| `--frames` | `annotated` | 'annotated' (frames with annotations) or 'all'. |
+| `--format` | `jpg` | 'jpg' (small, slightly lossy) or 'png' (exact pixels, larger). |
+| `--quality` | `95` | JPEG quality, 1-100. |
+| `--root` | none | Folder(s) to search for the videos by file name. |
+| `--overwrite` / `--no-overwrite` | off | Re-decode frames that are already cached. |
 
 ## `schema`
 

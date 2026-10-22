@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from fractions import Fraction
 from pathlib import Path
 
-from vidlabel_spec import Rational, VideoMetadata, VideoSource
+from vidlabel_spec import FrameIndex, Rational, VideoMetadata, VideoSource
 
 
 def file_hash(path: str | Path) -> str:
@@ -88,3 +88,41 @@ def probe_video(path: str | Path, video_id: str | None = None, *, hash: bool = T
         rotation=rotation, codec=s.get("codec_name"), pix_fmt=s.get("pix_fmt"), bit_rate=bit_rate,
         sources=[VideoSource(uri=str(p))], ingested_at=datetime.now(timezone.utc), extra=extra,
     )
+
+
+def probe_frame_index(path: str | Path, *, content_hash: str | None = None) -> FrameIndex:
+    """Read a video's per-frame timestamps and keyframes from its packet table with ffprobe. Nothing is decoded, so it takes
+    seconds even for long videos. Pass `content_hash` (from the metadata) to record which file the index belongs to.
+    Raises ValueError if the container has no timestamps (some raw streams), and RuntimeError without ffprobe."""
+    if shutil.which("ffprobe") is None:
+        raise RuntimeError("ffprobe not found; install ffmpeg")
+    p = Path(path).resolve()
+    tb_out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=time_base",
+                             "-of", "csv=p=0", str(p)], capture_output=True, text=True, check=True).stdout.strip()
+    tb = _frac(tb_out.splitlines()[0]) if tb_out else None
+    if tb is None:
+        raise ValueError(f"{p.name}: could not read the video time base")
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts,flags",
+                          "-of", "csv=p=0", str(p)], capture_output=True, text=True, check=True).stdout
+    packets: list[tuple[int, bool]] = []
+    for line in out.splitlines():
+        pts, _, flags = line.partition(",")
+        if not pts.lstrip("-").isdigit():
+            raise ValueError(f"{p.name}: packets have no timestamps, so a frame index cannot be made")
+        packets.append((int(pts), "K" in flags))
+    if not packets:
+        raise ValueError(f"{p.name}: no video packets found")
+    packets.sort()   # packets come in decoding order; sorting by timestamp gives display order, which is what frame numbers mean
+    return FrameIndex(content_hash=content_hash, timebase=Rational(num=tb.numerator, den=tb.denominator),
+                      pts=[a for a, _ in packets], keyframes=[i for i, (_, k) in enumerate(packets) if k])
+
+
+def reconcile_frame_count(meta: VideoMetadata, index: FrameIndex) -> VideoMetadata:
+    """Make `meta.frame_count` agree with `index`. If the count was only estimated when the video was probed, the index (an
+    exact count) replaces it; a real disagreement raises ValueError, because one of the two describes a different file."""
+    if meta.frame_count == index.frame_count:
+        return meta
+    if meta.extra.get("frame_count_estimated"):
+        extra = {k: v for k, v in meta.extra.items() if k != "frame_count_estimated"}
+        return meta.model_copy(update={"frame_count": index.frame_count, "extra": extra})
+    raise ValueError(f"the file has {index.frame_count} frames but the metadata says {meta.frame_count}")

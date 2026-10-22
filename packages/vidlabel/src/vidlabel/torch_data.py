@@ -5,8 +5,12 @@ Two ways to read, because decoding video is the cost that matters:
   VideoStream  (recommended for training) iterates each video once, front to back, so every frame is decoded at most
                once per epoch. Whole videos are shared out between DataLoader workers (and distributed ranks), so use
                at least as many videos as workers. Randomness comes from shuffling the video order and a shuffle buffer.
-  VideoFrames  map-style: `ds[i]` returns any sample, so samplers and random access work. Going backwards in a video
-               re-decodes from its start, so this is for validation, small or short-clip datasets, and debugging.
+  VideoFrames  map-style: `ds[i]` returns any sample, so samplers and random access work. A random frame costs a decode
+               from the keyframe before it (about half a keyframe interval on average; `vidlabel check-video` shows it),
+               far more than a sequential read. With a frame index (`vidlabel index`) the reader only jumps when that
+               saves work, and a DataLoader with `batch_size` > 1 reads each batch grouped by video and in frame order,
+               so frames in one keyframe interval are decoded once. For validation, small datasets and debugging; for
+               random sampling at scale build a frame cache (`vidlabel cache`).
 
 Both yield dicts of tensors (see `vidlabel.samples`): `image` is uint8 CHW. Use `collate_frames` with a DataLoader.
 """
@@ -77,6 +81,24 @@ class VideoFrames(_Dataset):
         video_id, frame = self.samples.index[i]
         sample = to_tensors(self.samples.sample(video_id, frame, self._reader(video_id).read(frame)))
         return self.transform(sample) if self.transform else sample
+
+    def __getitems__(self, indices: list[int]) -> list[dict]:
+        """A whole batch at once (a DataLoader with `batch_size` calls this): samples come back in the order asked, but the
+        frames are read grouped by video and in increasing order, so each keyframe interval is decoded once."""
+        wanted = [self.samples.index[i] for i in indices]
+        frames: dict[tuple[str, int], np.ndarray] = {}
+        by_video: dict[str, set[int]] = {}
+        for vid, f in wanted:
+            by_video.setdefault(vid, set()).add(f)
+        for vid, fs in by_video.items():
+            order = sorted(fs)
+            for f, img in zip(order, self._reader(vid).read_many(order)):
+                frames[(vid, f)] = img
+        out = []
+        for vid, f in wanted:
+            sample = to_tensors(self.samples.sample(vid, f, frames[(vid, f)]))
+            out.append(self.transform(sample) if self.transform else sample)
+        return out
 
 
 class VideoStream(_IterableDataset):

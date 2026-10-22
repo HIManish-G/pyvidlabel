@@ -14,6 +14,7 @@ my_dataset/
   videos/<video_id>/
     metadata.json               fps, frame count, size, rotation, content hash, where the file has been seen
     annotations.parquet         every annotation for this video
+    frame_index.json            optional: per-frame timestamps and keyframes, for fast and exact seeking
   views/<view_id>.json          a crop / time range of a video; annotations stay in full-frame coordinates
   compiled/<release_id>/        sorted training table + vocabulary snapshot (made by `vidlabel build`)
 ```
@@ -48,6 +49,7 @@ Optional extras: `pip install -e "packages/vidlabel[video]"` (OpenCV: previews, 
 - **Releases.** `vidlabel build` makes a sorted table whose id is a hash of its contents, with a label snapshot, so a run can be reproduced exactly.
 - **Check against the real video.** `vidlabel check-video` and `vidlabel preview` (OpenCV) draw annotations on actual frames.
 - **Training.** A framework-free sample builder and PyTorch datasets (streaming and map-style), including crops and box formats.
+- **Fast, exact frame access.** A per-video frame index makes seeking safe (even in variable-frame-rate video) and plans reads by keyframe; an optional frame cache turns random access into a file read.
 - **Runs on Linux, Windows and macOS** (tested in CI, with and without DataLoader workers).
 
 ## Documentation
@@ -69,7 +71,7 @@ Start at **[docs/index.md](docs/index.md)**.
 
 ## Status
 
-Version 0.4.0, pre-release; the name is provisional and nothing is on PyPI yet. Tested: spec and validator, reading and
+Version 0.5.0, pre-release; the name is provisional and nothing is on PyPI yet. Tested: spec and validator, reading and
 writing, views, masks, releases, the command line, frame reading and previews on real H.264 video, and the PyTorch loader.
 **Not yet verified:** Parquet against other storage at scale, several people editing one video at once, the loader on very
 large datasets or many GPUs, variable-frame-rate video in real datasets. There are **no importers or exporters** for other

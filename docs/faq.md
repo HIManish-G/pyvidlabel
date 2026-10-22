@@ -41,15 +41,36 @@ Paths are hints. Pass `--video-path file.mp4`, or `--root some/folder` to search
 
 Some recordings (many phone and screen captures) do not have a constant frame rate. vidlabel flags them (`is_vfr: true`
 in the metadata) and handles them safely, but a frame *index* in such a video is a position in the decoded stream, not
-`time * fps`, so convert times to frame indices with care. Seeking is never used on them, because OpenCV's seek was
-measured to land on the wrong frame in about three tries out of four. Random access to such a file is therefore slow,
-and `VideoStream` (which reads front to back) is unaffected. Re-encoding to a constant frame rate
-(`ffmpeg -i in.mp4 -r 30 out.mp4`, adjusting the rate) makes seeking available again, but then **re-register the video and
-check that your annotations still line up**, because frame indices change.
+`time * fps`, so convert times to frame indices with care; the stored frame index (`pts` per frame) is the exact map between the two.
+
+OpenCV's own seek is wrong on these files, so without a frame index vidlabel never seeks in them and random access is slow
+(`VideoStream`, which reads front to back, is unaffected). **With a frame index it seeks correctly**: run
+`vidlabel index my_dataset` (videos registered with an older version have none). Re-encoding to a constant frame rate is no longer
+needed, and if you do it, **re-register the video and check that your annotations still line up**, because frame indices change.
+
+## Reading frames
+
+**Random access is slow.** A random frame costs a decode from the keyframe before it. `vidlabel check-video my_dataset clip` shows the
+keyframe spacing and the average frames decoded per random frame, and, if it is high, the `ffmpeg` command that re-encodes with a
+keyframe every 30 frames. For training, prefer `VideoStream`, which reads in order; for random sampling build a frame cache
+(`vidlabel cache`); a `DataLoader` batch over `VideoFrames` is already read in frame order. Details and measurements are in
+[training](training.md#what-random-access-costs).
 
 **Warning: "seeking is not frame-exact here ...".**
-The one-off check found that seeking returns different frames than sequential decoding for this file, so reads fall back to
-sequential decoding and are slow. Use `VideoStream`, or re-encode. `vidlabel check-video my_dataset clip --seek` runs a wider check.
+The one-off check found that seeking returns different frames than sequential decoding for this file (and there is no frame
+index), so reads fall back to sequential decoding and are slow. Run `vidlabel index my_dataset`, use `VideoStream`, or re-encode.
+`vidlabel check-video my_dataset clip --seek` runs a wider check.
+
+**Warning: "the decoder's frame timestamps do not match the frame index".**
+The index and the file disagree (the file was replaced, or the container reports odd timestamps). The reader ignored the index and
+decoded sequentially, so the frames are still right. Re-run `vidlabel index my_dataset --force`.
+
+**Warning: "the frame index was made from a different file".**
+The video's hash differs from the one the index records. Check that you are reading the registered file (`vidlabel check-video
+--hash`); if the file was legitimately replaced, re-register it.
+
+**Warning: "frame cache for ... was made from a different file".**
+The cached frames came from another version of the video, so they are not used. Rebuild with `vidlabel cache ... --overwrite`.
 
 ## Writing annotations
 

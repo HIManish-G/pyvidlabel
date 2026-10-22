@@ -4,8 +4,10 @@ Frames are returned as RGB uint8 arrays in the video's *displayed* orientation (
 coordinate system every annotation uses. If a View is given, the frame is cropped to its region and resized to its
 `output_size`, i.e. exactly what a pipeline working on that view would see.
 
-Decoding is sequential, so reading frame N costs a decode of frames 0..N. That is what makes it frame-accurate
-(seeking in compressed video often is not); a faster indexed reader can come later behind the same functions.
+Video can only be decoded forwards from a keyframe, so reading frame N costs a decode from the keyframe before it. A
+`FrameReader` given the video's frame index (see `vidlabel.probe.probe_frame_index`) knows where the keyframes are, jumps
+only when that saves work, and checks every frame it returns against the index, so it is frame-exact even on
+variable-frame-rate video. Without an index it falls back to a one-off pixel check and sequential decoding.
 """
 from __future__ import annotations
 
@@ -16,7 +18,7 @@ from pathlib import Path
 from typing import Iterable, Iterator
 
 import numpy as np
-from vidlabel_spec import VideoMetadata, View
+from vidlabel_spec import FrameIndex, VideoMetadata, View
 
 from .probe import file_hash
 
@@ -136,17 +138,18 @@ def _digest(frame: np.ndarray) -> bytes:
     return hashlib.blake2b(np.ascontiguousarray(frame).tobytes(), digest_size=16).digest()
 
 
-def seek_mismatches(path: str | Path, meta: VideoMetadata, positions: Iterable[int]) -> list[int]:
+def seek_mismatches(path: str | Path, meta: VideoMetadata, positions: Iterable[int], index: FrameIndex | None = None) -> list[int]:
     """Frames at `positions` for which seeking does NOT return exactly what sequential decoding returns.
 
     Empty means seeking is frame-exact at those positions. OpenCV's seek is exact for ordinary constant-frame-rate
     files but can land a few frames off on variable-frame-rate video or odd containers, which would silently misalign
-    every box, so seeking is only used after this check (see `FrameReader`).
+    every box, so without an index seeking is only used after this check (see `FrameReader`). With `index`, the reader
+    under test is the indexed one.
     """
     wanted = sorted({int(p) for p in positions if 0 <= int(p) < meta.frame_count})
     truth = {i: _digest(f) for i, f in read_frames(path, wanted, meta)}
     bad: list[int] = []
-    with FrameReader(path, meta, seek="always") as r:
+    with FrameReader(path, meta, seek="always", index=index) as r:
         # a forward jump from the start, then back and forth, so backward seeks are checked too
         order = wanted[::-1][:1] + wanted[:1] + wanted[len(wanted) // 2:] + wanted[:len(wanted) // 2]
         for i in dict.fromkeys(order):
@@ -159,35 +162,59 @@ def seek_mismatches(path: str | Path, meta: VideoMetadata, positions: Iterable[i
     return sorted(bad)
 
 
+_SEEK_OVERHEAD = 8   # frames of decoding a jump has to save before it is worth doing
+
+
 class FrameReader:
     """Keeps one video open and reads frames by index.
 
-    Reading forwards only decodes what is in between. Asking for an earlier frame, or one far ahead, normally means
-    decoding from the start of the file; `seek` makes that cheap by jumping to the nearest keyframe first:
+    Reading forwards only decodes what is in between. Asking for an earlier frame, or one far ahead, means decoding from
+    a keyframe; `seek` and `index` decide how that is done:
 
-    - `seek="auto"` (default): seek only if it has been verified for this file: not variable frame rate, and the frames
-      returned after seeking are identical to sequential decoding at a few test positions (checked once per file per
-      process, a short decode). Otherwise decode sequentially, with a warning.
-    - `seek="off"`: never seek.
-    - `seek="always"`: seek without checking (for tests and for `seek_mismatches`).
+    - With `index` (a `FrameIndex`): the reader knows where the keyframes are, so it jumps only when that decodes fewer
+      frames than reading on, and never inside a keyframe interval it is already in. After every frame it compares the
+      decoder's timestamp with the index; if they ever disagree it warns and falls back to sequential decoding, so a
+      wrong frame is never returned silently. This works on variable-frame-rate video too. An index for a different
+      file (hash or frame count differs) is ignored with a warning.
+    - Without an index, `seek="auto"` (default) seeks only if it has been verified for this file: not variable frame rate,
+      and the frames returned after seeking are identical to sequential decoding at a few test positions (checked once
+      per file per process). Otherwise it decodes sequentially, with a warning.
+    - `seek="off"`: never seek (the index, if any, is not used).
+    - `seek="always"`: seek without the pixel check (for tests and for `seek_mismatches`).
 
-    For training prefer `VideoStream`, which reads each video front to back and never needs to seek.
-    Not thread-safe; use one reader per process or thread.
+    `read_many` reads several frames at once in the cheapest order. For training prefer `VideoStream`, which reads each
+    video front to back. Not thread-safe; use one reader per process or thread.
     """
 
     def __init__(self, path: str | Path, meta: VideoMetadata, view: View | None = None, *, seek: str = "auto",
-                 seek_threshold: int = 100):
+                 seek_threshold: int = 100, index: FrameIndex | None = None):
         if seek not in ("auto", "off", "always"):
             raise ValueError("seek must be 'auto', 'off' or 'always'")
         self.path, self.meta, self.view = Path(path), meta, view
         self.seek, self.seek_threshold = seek, seek_threshold
+        self.index: FrameIndex | None = None
+        if index is not None:
+            if index.frame_count != meta.frame_count:
+                warnings.warn(f"{self.path.name}: the frame index has {index.frame_count} frames but the metadata says "
+                              f"{meta.frame_count}; ignoring the index", RuntimeWarning, stacklevel=2)
+            elif index.content_hash and meta.content_hash and index.content_hash != meta.content_hash:
+                warnings.warn(f"{self.path.name}: the frame index was made from a different file; ignoring it "
+                              f"(re-run `vidlabel index`)", RuntimeWarning, stacklevel=2)
+            else:
+                self.index = index
         self._cap = None
         self._pos = 0  # index of the next frame the decoder will return
         self._cap_rotates = False
 
     @property
+    def _indexed(self) -> bool:
+        return self.index is not None and self.seek != "off"
+
+    @property
     def seek_enabled(self) -> bool:
-        """Whether this reader will use seeking (runs the one-off check in "auto" mode)."""
+        """Whether this reader will use seeking (without an index, runs the one-off check in "auto" mode)."""
+        if self._indexed:
+            return True
         if self.seek != "auto":
             return self.seek == "always"
         if self.meta.is_vfr or self.meta.frame_count <= _SEEK_PROBES[0] + 20:
@@ -199,8 +226,8 @@ class FrameReader:
             _SEEK_VERDICTS[key] = not bad
             if bad:
                 warnings.warn(f"{self.path.name}: seeking is not frame-exact here (frames {bad} differ), so random access "
-                              f"decodes from the start and is slow. Use VideoStream, or re-encode as constant frame rate.",
-                              RuntimeWarning, stacklevel=3)
+                              f"decodes from the start and is slow. Use VideoStream, re-encode as constant frame rate, "
+                              f"or add a frame index (`vidlabel index`).", RuntimeWarning, stacklevel=3)
         return _SEEK_VERDICTS[key]
 
     def _reopen(self) -> None:
@@ -209,12 +236,76 @@ class FrameReader:
         self._cap_rotates = bool(self._cap.get(_cv2().CAP_PROP_ORIENTATION_AUTO))
         self._pos = 0
 
+    def _frame_here(self) -> int | None:
+        """Frame number of the frame the decoder just produced, from its timestamp and the index (None if it matches no frame)."""
+        idx = self.index
+        ms = self._cap.get(_cv2().CAP_PROP_POS_MSEC)
+        return idx.frame_at(ms / 1000.0 * idx.timebase.den / idx.timebase.num + idx.pts[0])
+
+    def _seek_near(self, target: int) -> int | None:
+        """Jump the decoder close to `target` and return the number of the frame it produced, which is never after
+        `target`. The jump is by time, corrected from the index, so it also works when frame numbers and time disagree
+        (variable frame rate). None if it could not be done reliably."""
+        cap = self._cap
+        fps = cap.get(_cv2().CAP_PROP_FPS) or self.meta.fps.value
+        guess = int(round(self.index.seconds(target) * fps))
+        for _ in range(6):
+            cap.set(_cv2().CAP_PROP_POS_FRAMES, max(0, guess))
+            if not cap.grab():
+                return None
+            landed = self._frame_here()
+            if landed is None:
+                return None
+            if landed <= target:
+                return landed
+            guess -= landed - target + 1   # overshot: aim earlier
+        return None
+
+    def _past_end(self, index: int) -> IndexError:
+        return IndexError(f"frame {index} is past the end of the video (only {self._pos} frames could be decoded)")
+
+    def _read_indexed(self, t: int) -> np.ndarray | None:
+        """Frame `t` using the index, or None if the decoder disagreed with the index (the caller then falls back)."""
+        n = self.index.frame_count
+        if t >= n:
+            raise IndexError(f"frame {t} is past the end of the video ({n} frames)")
+        ahead = t - self._pos + 1                      # frames to decode to reach t from here, if t is not behind us
+        if ahead <= 0 or self.index.decode_cost(t) + _SEEK_OVERHEAD < ahead:
+            landed = self._seek_near(t)
+            if landed is None:
+                return None
+            self._pos = landed + 1
+            while self._pos <= t:
+                if not self._cap.grab():
+                    raise self._past_end(t)
+                self._pos += 1
+            ok, bgr = self._cap.retrieve()
+        else:
+            while self._pos < t:
+                if not self._cap.grab():
+                    raise self._past_end(t)
+                self._pos += 1
+            ok, bgr = self._cap.read()
+            self._pos += 1
+        if not ok:
+            raise self._past_end(t)
+        return bgr if self._frame_here() == t else None
+
     def read(self, index: int) -> np.ndarray:
         """RGB frame `index` in displayed orientation, cropped to the view if there is one."""
         index = int(index)
         if index < 0:
             raise IndexError("frame indices must be >= 0")
         if self._cap is None:
+            self._reopen()
+        if self._indexed:
+            bgr = self._read_indexed(index)
+            if bgr is not None:
+                return _display_frame(bgr, self.meta, self._cap_rotates, self.view)
+            warnings.warn(f"{self.path.name}: the decoder's frame timestamps do not match the frame index; ignoring the "
+                          f"index and decoding sequentially (re-run `vidlabel index` if the file changed)",
+                          RuntimeWarning, stacklevel=2)
+            self.index = None
             self._reopen()
         gap = index - self._pos
         if gap < 0 or (gap > self.seek_threshold and self.seek != "off"):
@@ -225,13 +316,27 @@ class FrameReader:
                 self._reopen()
         while self._pos < index:
             if not self._cap.grab():
-                raise IndexError(f"frame {index} is past the end of the video (only {self._pos} frames could be decoded)")
+                raise self._past_end(index)
             self._pos += 1
         ok, bgr = self._cap.read()
         if not ok:
-            raise IndexError(f"frame {index} is past the end of the video (only {self._pos} frames could be decoded)")
+            raise self._past_end(index)
         self._pos += 1
         return _display_frame(bgr, self.meta, self._cap_rotates, self.view)
+
+    def read_many(self, indices: Iterable[int]) -> list[np.ndarray]:
+        """Frames for `indices`, in the order given. They are read in increasing order so each keyframe interval is
+        decoded once however the request is ordered; repeated indices are decoded once and copied."""
+        indices = [int(i) for i in indices]
+        out: list[np.ndarray | None] = [None] * len(indices)
+        last, frame = None, None
+        for k in sorted(range(len(indices)), key=indices.__getitem__):
+            if indices[k] == last:
+                out[k] = frame.copy()
+            else:
+                last, frame = indices[k], self.read(indices[k])
+                out[k] = frame
+        return out  # type: ignore[return-value]
 
     def close(self) -> None:
         """Release the open video file. Safe to call twice; the reader reopens it on the next `read`."""

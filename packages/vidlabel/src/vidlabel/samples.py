@@ -26,6 +26,7 @@ from . import masks as masklib
 from .boxes import convert_boxes
 from .build import Compiled
 from .dataset import Dataset
+from .cache import CachedReader, FrameCache
 from .frames import FrameReader, crop_mask_to_view
 
 _BASE_COLUMNS = ["annotation_id", "video_id", "start_frame", "end_frame", "kind", "label", "track_id",
@@ -52,6 +53,8 @@ class FrameSamples:
     - `box_format`: `"xyxy"`, `"xywh"` or `"cxcywh"`; `normalized=True` gives fractions of the image size.
     - `label_offset`: added to class indices (e.g. `1` for detectors that reserve 0 for background).
     - `roots`: folders to search for videos whose recorded path is stale.
+    - `cache`: a `FrameCache` (or the folder of one made by `vidlabel cache`). Frames it holds are read as image files
+      instead of decoded from video; anything missing falls back to the video. See docs/training.md.
 
     See docs/training.md for what a sample contains.
     """
@@ -61,7 +64,7 @@ class FrameSamples:
                  labels: Sequence[str] | None = None, origins: Sequence[str] | None = None,
                  min_confidence: float | None = None, frames: str = "annotated", stride: int = 1,
                  with_masks: bool = False, box_format: str = "xyxy", normalized: bool = False, label_offset: int = 0,
-                 roots: Sequence[str | Path] = ()):
+                 roots: Sequence[str | Path] = (), cache: FrameCache | str | Path | None = None):
         if frames not in ("annotated", "all"):
             raise ValueError("frames must be 'annotated' or 'all'")
         if stride < 1:
@@ -72,6 +75,7 @@ class FrameSamples:
         self.ds, self.view_id, self.kinds = ds, view_id, tuple(kinds)
         self.with_masks, self.box_format, self.normalized, self.label_offset = with_masks, box_format, normalized, label_offset
         self.roots = list(roots)
+        self.cache = FrameCache(cache) if isinstance(cache, (str, Path)) else cache
         self.view: View | None = ds.view(view_id) if view_id else None
         table, self.release_id, pinned_vocab = self._load(release, with_masks)
         # a pinned release carries the vocabulary it was built with, so class indices cannot drift if labels are added later
@@ -165,9 +169,18 @@ class FrameSamples:
             raise FileNotFoundError(f"cannot find the video for '{video_id}'; pass roots=[...] to FrameSamples")
         return Path(p)
 
-    def reader(self, video_id: str) -> FrameReader:
-        """A FrameReader for one video, already set up with this object's view. Close it when done (or use `with`)."""
-        return FrameReader(self.video_path(video_id), self.ds.video(video_id), self.view)
+    def reader(self, video_id: str):
+        """A reader for one video (`read(frame)`, `read_many(frames)`, `close()`), already set up with this object's view.
+        It uses the video's frame index when it has one, and the frame cache if there is one that matches the video.
+        Close it when done (or use `with`)."""
+        meta = self.ds.video(video_id)
+
+        def from_video() -> FrameReader:
+            return FrameReader(self.video_path(video_id), meta, self.view, index=self.ds.frame_index(video_id))
+
+        if self.cache is not None and self.cache.usable(video_id, meta):
+            return CachedReader(self.cache, video_id, meta, self.view, from_video)
+        return from_video()
 
     def _active(self, video_id: str, frame: int) -> list[dict]:
         rows = [self._rows[i] for i in self._points.get((video_id, frame), [])]

@@ -136,7 +136,7 @@ def api_page() -> str:
     import vidlabel
     import vidlabel_spec
     import importlib
-    from vidlabel import boxes, frames, masks, preview, probe, samples, validate
+    from vidlabel import boxes, cache, frames, masks, preview, probe, samples, validate
     build = importlib.import_module("vidlabel.build")   # `vidlabel.build` the attribute is the function, not the module
     from vidlabel.dataset import Dataset
 
@@ -165,6 +165,12 @@ def api_page() -> str:
     out += ["## Probing videos (needs ffprobe)", ""]
     out += _entry(probe.probe_video, "vidlabel.probe.probe_video")
     out += _entry(probe.file_hash, "vidlabel.probe.file_hash")
+    out += _entry(probe.probe_frame_index, "vidlabel.probe.probe_frame_index")
+    out += _entry(probe.reconcile_frame_count, "vidlabel.probe.reconcile_frame_count")
+    out += ["## Frame cache (`vidlabel.cache`, needs OpenCV)", ""]
+    out += _class_section(cache.FrameCache, "vidlabel.cache.FrameCache")
+    out += _class_section(cache.CachedReader, "vidlabel.cache.CachedReader")
+    out += _class_section(cache.CacheStats, "vidlabel.cache.CacheStats")
     out += ["## Masks (`vidlabel.masks`)", ""]
     for n in ("encode", "decode", "decode_crop", "bbox", "info", "place_in_frame", "resize_nearest", "from_coco_rle", "to_coco_rle"):
         out += _entry(getattr(masks, n), f"vidlabel.masks.{n}")
@@ -180,7 +186,7 @@ def api_page() -> str:
             "The codes are listed in the [spec](SPEC.md#validation-codes).", ""]
     out += ["## Spec models (`vidlabel_spec`, also importable from `vidlabel`)", "",
             "These pydantic models are the contract; unknown fields are rejected (custom data goes in `extra`).", ""]
-    for n in ("VideoMetadata", "VideoSource", "Rational", "Region", "View", "Label", "Vocab", "Manifest", "Release"):
+    for n in ("VideoMetadata", "VideoSource", "FrameIndex", "Rational", "Region", "View", "Label", "Vocab", "Manifest", "Release"):
         m = getattr(vidlabel_spec, n)
         out += [f"### `{n}`", ""]
         if m.__doc__:

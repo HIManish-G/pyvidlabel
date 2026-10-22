@@ -60,11 +60,56 @@ def build(path: Path, include_rejected: bool = typer.Option(False, help="Also pu
 @app.command("add-video")
 def add_video(path: Path, video_file: Path,
               video_id: Optional[str] = typer.Option(None, help="Id to register it under. Default: the file name without extension."),
-              no_hash: bool = typer.Option(False, "--no-hash", help="Skip hashing the file (faster, weaker identity).")):
-    """Probe a video file with ffprobe and register it."""
-    from .probe import probe_video
-    meta = Dataset.open(path).add_video(probe_video(video_file, video_id, hash=not no_hash))
-    typer.echo(f"added {meta.video_id}: {meta.width}x{meta.height}, {meta.frame_count} frames")
+              no_hash: bool = typer.Option(False, "--no-hash", help="Skip hashing the file (faster, weaker identity)."),
+              no_index: bool = typer.Option(False, "--no-index", help="Skip the frame index (timestamps and keyframes; see `vidlabel index`).")):
+    """Probe a video file with ffprobe and register it, with its frame index."""
+    from .probe import probe_frame_index, probe_video, reconcile_frame_count
+    meta, index = probe_video(video_file, video_id, hash=not no_hash), None
+    if not no_index:
+        try:
+            index = probe_frame_index(video_file, content_hash=meta.content_hash)
+            meta = reconcile_frame_count(meta, index)
+        except ValueError as e:
+            typer.echo(f"[note] no frame index: {e}")
+            index = None
+    meta = Dataset.open(path).add_video(meta, frame_index=index)
+    typer.echo(f"added {meta.video_id}: {meta.width}x{meta.height}, {meta.frame_count} frames"
+               + (f", keyframe every {index.interval_stats()['median']} frames" if index else ""))
+
+
+@app.command("index")
+def index_cmd(path: Path, video_ids: list[str] = typer.Argument(None, help="Videos to index. Default: all that have no index yet."),
+              video_path: Optional[Path] = typer.Option(None, help="Video file, if the recorded path is stale (one video only)."),
+              root: list[Path] = typer.Option([], help="Folder(s) to search for the videos by file name."),
+              force: bool = typer.Option(False, help="Rebuild indexes that already exist."),
+              no_verify: bool = typer.Option(False, "--no-verify", help="Do not check the file's hash against the registered one (faster).")):
+    """Make (or rebuild) the frame index of registered videos: per-frame timestamps and keyframes, read without decoding."""
+    from .probe import file_hash, probe_frame_index, reconcile_frame_count
+    ds = Dataset.open(path)
+    ids = list(video_ids or [v for v in ds.video_ids() if force or ds.frame_index(v) is None])
+    if video_path is not None and len(ids) != 1:
+        raise typer.BadParameter("--video-path needs exactly one video id")
+    failed = 0
+    for vid in ids:
+        try:
+            meta = ds.video(vid)
+            file = _resolve_video(ds, vid, video_path, root)
+            if meta.content_hash and not no_verify and file_hash(file) != meta.content_hash:
+                raise ValueError(f"{file.name} is not the file that was registered (hash differs)")
+            index = probe_frame_index(file, content_hash=meta.content_hash)
+            fixed = reconcile_frame_count(meta, index)
+            if fixed is not meta:
+                ds.add_video(fixed, exist_ok=True)
+            ds.set_frame_index(vid, index)
+        except (KeyError, FileNotFoundError, ValueError, RuntimeError, typer.BadParameter) as e:
+            typer.echo(f"[error] {vid}: {e}")
+            failed += 1
+            continue
+        st = index.interval_stats()
+        typer.echo(f"indexed {vid}: {index.frame_count} frames, keyframe every {st['median']} frames (longest {st['max']})")
+    if not ids:
+        typer.echo("nothing to do: every video already has an index (use --force to rebuild)")
+    raise typer.Exit(1 if failed else 0)
 
 
 def _ints(text: str, n: int, what: str) -> list[int]:
@@ -154,39 +199,99 @@ def preview(path: Path, video_id: str, out: Path = typer.Option(Path("preview_ou
         typer.echo("[note] this video has no annotations" + (f" in view '{view}'" if view else "") + ", so frames are plain.")
 
 
+_LONG_GOP = 30   # mean frames decoded per random access above which check-video suggests re-encoding
+
+
+def reencode_command(meta, name: str = "input.mp4") -> str:
+    """The ffmpeg command that re-encodes a video with a keyframe every 30 frames, keeping frame timing and audio."""
+    stem = name.rsplit(".", 1)[0]
+    timing = " -fps_mode passthrough" if meta.is_vfr else ""
+    return f"ffmpeg -i {name} -c:v libx264 -crf 18 -g {_LONG_GOP} -keyint_min {_LONG_GOP}{timing} -c:a copy {stem}_gop{_LONG_GOP}.mp4"
+
+
 @app.command("check-video")
 def check_video_cmd(path: Path, video_id: str, video_path: Optional[Path] = typer.Option(None, help="Video file, if the recorded path is stale."),
                     root: list[Path] = typer.Option([], help="Folder(s) to search for the video by file name."),
                     hash: bool = typer.Option(False, help="Also verify the content hash (reads the whole file)."),
                     seek: bool = typer.Option(False, help="Also test that random-access seeking returns exactly the "
                                                           "right frames (decodes the whole video once).")):
-    """Check that the video file on disk matches the metadata registered for it."""
+    """Check that the video file on disk matches the metadata, and report how costly random access is (keyframe spacing)."""
     from .frames import check_video, seek_mismatches
+    from .probe import probe_frame_index
     ds = Dataset.open(path)
     try:
-        problems = check_video(_resolve_video(ds, video_id, video_path, root), ds.video(video_id), verify_hash=hash)
+        file = _resolve_video(ds, video_id, video_path, root)
+        meta = ds.video(video_id)
+        problems = check_video(file, meta, verify_hash=hash)
     except (ImportError, FileNotFoundError, ValueError) as e:
         typer.echo(f"[error] {e}")
         raise typer.Exit(1)
     for p in problems:
         typer.echo(f"[error] {p}")
     typer.echo("ok: file matches the metadata" if not problems else f"{len(problems)} problem(s)")
-    if seek and not problems:
-        meta = ds.video(video_id)
+    if problems:
+        raise typer.Exit(1)
+    index = ds.frame_index(video_id)
+    if index is None:
+        try:
+            index = probe_frame_index(file, content_hash=meta.content_hash)
+            typer.echo(f"[note] {video_id} has no stored frame index; run `vidlabel index {path}` to add one "
+                       f"(needed to seek in variable-frame-rate video and to plan reads)")
+        except (ValueError, RuntimeError) as e:
+            typer.echo(f"[note] could not read keyframes: {e}")
+    if index is not None:
+        st = index.interval_stats()
+        typer.echo(f"keyframes: every {st['median']} frames (shortest {st['min']}, longest {st['max']}); a random frame "
+                   f"decodes about {st['mean_cost']:.0f} frames")
+        if st["mean_cost"] > _LONG_GOP:
+            typer.echo(f"[note] keyframes are far apart, so random access is slow (VideoStream, which reads in order, is "
+                       f"unaffected). To make it faster, re-encode with a keyframe every {_LONG_GOP} frames:\n"
+                       f"    {reencode_command(meta, file.name)}\n"
+                       f"  Re-encoding changes the pixels slightly and makes a different file: register the result as a new "
+                       f"video. Or build a frame cache for the frames you train on: `vidlabel cache`.")
+    if seek:
         n = meta.frame_count
         positions = sorted({int(n * q / 40) for q in range(40)} | {n - 1})
         try:
-            bad = seek_mismatches(_resolve_video(ds, video_id, video_path, root), meta, positions)
+            bad = seek_mismatches(file, meta, positions, index=ds.frame_index(video_id))
         except (ImportError, FileNotFoundError, ValueError) as e:
             typer.echo(f"[error] {e}")
             raise typer.Exit(1)
-        if bad or meta.is_vfr:
-            why = "the file is variable frame rate" if meta.is_vfr else f"frames {bad[:6]} differ"
+        has_index = ds.frame_index(video_id) is not None
+        if bad or (meta.is_vfr and not has_index):
+            why = "the file is variable frame rate and has no frame index" if not bad else f"frames {bad[:6]} differ"
             typer.echo(f"[note] seeking is not frame-exact for this file ({why}). Random access will decode from the "
-                       f"start and be slow; VideoStream is unaffected. Re-encoding as constant frame rate fixes it.")
+                       f"start and be slow; VideoStream is unaffected. `vidlabel index` fixes variable frame rate.")
         else:
-            typer.echo(f"ok: seeking is frame-exact at {len(positions)} positions, so random access is fast")
-    raise typer.Exit(1 if problems else 0)
+            typer.echo(f"ok: seeking is frame-exact at {len(positions)} positions"
+                       + (" (using the frame index)" if has_index else ""))
+    raise typer.Exit(0)
+
+
+@app.command("cache")
+def cache_cmd(path: Path, out: Path,
+              release: str = typer.Option("latest", help="Release to take the frames from: 'latest', a release id, or 'none' for the live annotations."),
+              view: Optional[str] = typer.Option(None, help="Only the frames this view samples."),
+              frames: str = typer.Option("annotated", help="'annotated' (frames with annotations) or 'all'."),
+              format: str = typer.Option("jpg", help="'jpg' (small, slightly lossy) or 'png' (exact pixels, larger)."),
+              quality: int = typer.Option(95, help="JPEG quality, 1-100."),
+              root: list[Path] = typer.Option([], help="Folder(s) to search for the videos by file name."),
+              overwrite: bool = typer.Option(False, help="Re-decode frames that are already cached.")):
+    """Save the frames a training run will use as image files, so random access is a file read. The cache is derived data:
+    delete and rebuild it any time. Pass it to FrameSamples(cache=...)."""
+    from .cache import FrameCache
+    from .samples import FrameSamples
+    try:
+        samples = FrameSamples(Dataset.open(path), release=None if release == "none" else release, view_id=view,
+                               frames=frames, roots=root)
+        _, st = FrameCache.build(samples, out, format=format, quality=quality, overwrite=overwrite)
+    except (ImportError, FileNotFoundError, ValueError, OSError) as e:
+        typer.echo(f"[error] {e}")
+        raise typer.Exit(1)
+    typer.echo(f"cached {st.written} frame(s) in {st.seconds:.1f}s ({st.bytes / 1e6:.1f} MB, {st.mean_kb:.0f} KB each)"
+               + (f"; {st.skipped} were already there" if st.skipped else "") + f" -> {out}")
+    if format == "jpg":
+        typer.echo("[note] jpg is lossy: pixels differ slightly from the video. Use --format png for exact pixels.")
 
 
 @app.command()

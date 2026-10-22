@@ -13,7 +13,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.dataset as pads
 import pyarrow.parquet as pq
-from vidlabel_spec import (COLUMN_NAMES, SPEC_VERSION, Kind, Label, Manifest, Origin, Status, VideoMetadata, View, Vocab,
+from vidlabel_spec import (COLUMN_NAMES, SPEC_VERSION, FrameIndex, Kind, Label, Manifest, Origin, Status, VideoMetadata, View, Vocab,
                            is_valid_origin)
 
 from . import masks as _masks
@@ -43,6 +43,13 @@ def _origin_value(v) -> str:
         raise ValueError(f"origin={v!r}; must be one of {[o.value for o in Origin]} or a custom value like 'x-crowd' "
                          "(lowercase letters, digits, '.', '_' or '-' after 'x-')")
     return v.value if hasattr(v, "value") else v
+
+
+def _check_index_fits(meta: VideoMetadata, index: FrameIndex) -> None:
+    if meta.frame_count and index.frame_count != meta.frame_count:
+        raise ValueError(f"the frame index has {index.frame_count} frames but video '{meta.video_id}' has {meta.frame_count}")
+    if meta.content_hash and index.content_hash and meta.content_hash != index.content_hash:
+        raise ValueError(f"the frame index was made from a different file than video '{meta.video_id}' (hash differs)")
 
 
 class Dataset:
@@ -115,18 +122,37 @@ class Dataset:
     def _vdir(self, video_id: str) -> Path:
         return self.path / "videos" / video_id
 
-    def add_video(self, meta: VideoMetadata | Mapping[str, Any], exist_ok: bool = False) -> VideoMetadata:
+    def add_video(self, meta: VideoMetadata | Mapping[str, Any], exist_ok: bool = False, *,
+                  frame_index: FrameIndex | None = None) -> VideoMetadata:
         """Register a video from a VideoMetadata (or a dict of its fields), e.g. from `probe_video`. The video file itself
-        is never copied. Raises FileExistsError if the id exists, unless `exist_ok=True` (which replaces the metadata)."""
+        is never copied. Raises FileExistsError if the id exists, unless `exist_ok=True` (which replaces the metadata).
+
+        `frame_index` (from `probe_frame_index`) is stored next to the metadata; see `set_frame_index`."""
         meta = meta if isinstance(meta, VideoMetadata) else VideoMetadata.model_validate(meta)
         m = self.manifest
         if meta.video_id in m.videos and not exist_ok:
             raise FileExistsError(f"video '{meta.video_id}' already exists")
+        if frame_index is not None:
+            _check_index_fits(meta, frame_index)
         _write_json(self._vdir(meta.video_id) / "metadata.json", meta.model_dump_json(indent=2, exclude_none=True))
+        if frame_index is not None:
+            _write_json(self._vdir(meta.video_id) / "frame_index.json", frame_index.model_dump_json(exclude_none=True))
         if meta.video_id not in m.videos:
             m.videos = sorted([*m.videos, meta.video_id])
             self._save_manifest(m)
         return meta
+
+    def frame_index(self, video_id: str) -> FrameIndex | None:
+        """The stored frame index of a video (timestamps and keyframes), or None if it has none."""
+        self.video(video_id)  # unknown ids raise KeyError
+        p = self._vdir(video_id) / "frame_index.json"
+        return FrameIndex.model_validate_json(p.read_text(encoding="utf-8")) if p.exists() else None
+
+    def set_frame_index(self, video_id: str, index: FrameIndex) -> None:
+        """Store (or replace) the frame index of a registered video. Raises ValueError if it has a different number of
+        frames than the metadata says, or was made from a different file (hash mismatch)."""
+        _check_index_fits(self.video(video_id), index)
+        _write_json(self._vdir(video_id) / "frame_index.json", index.model_dump_json(exclude_none=True))
 
     def video(self, video_id: str) -> VideoMetadata:
         """Metadata of one registered video. Raises KeyError for an unknown id."""

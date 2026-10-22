@@ -49,11 +49,18 @@ Add labels to the shared vocabulary (existing names are left alone). Returns the
 #### `Dataset.add_video`
 
 ```python
-add_video(meta: VideoMetadata | Mapping[str, Any], exist_ok: bool = False) -> VideoMetadata
+add_video(
+    meta: VideoMetadata | Mapping[str, Any],
+    exist_ok: bool = False,
+    *,
+    frame_index: FrameIndex | None = None,
+) -> VideoMetadata
 ```
 
 Register a video from a VideoMetadata (or a dict of its fields), e.g. from `probe_video`. The video file itself
 is never copied. Raises FileExistsError if the id exists, unless `exist_ok=True` (which replaces the metadata).
+
+`frame_index` (from `probe_frame_index`) is stored next to the metadata; see `set_frame_index`.
 
 #### `Dataset.add_view`
 
@@ -109,6 +116,14 @@ delete_annotations(video_id: str, annotation_ids: Iterable[int]) -> int
 
 Remove annotations of one video by id. Returns how many rows were removed.
 
+#### `Dataset.frame_index`
+
+```python
+frame_index(video_id: str) -> FrameIndex | None
+```
+
+The stored frame index of a video (timestamps and keyframes), or None if it has none.
+
 #### `Dataset.manifest` (property)
 
 The parsed manifest.json: spec version, video ids and view ids.
@@ -128,6 +143,15 @@ resolve_video_path(video_id: str, roots: Sequence[str | Path] = ()) -> Path | No
 ```
 
 Find the video file: try each recorded source, then search `roots` for the same file name.
+
+#### `Dataset.set_frame_index`
+
+```python
+set_frame_index(video_id: str, index: FrameIndex) -> None
+```
+
+Store (or replace) the frame index of a registered video. Raises ValueError if it has a different number of
+frames than the metadata says, or was made from a different file (hash mismatch).
 
 #### `Dataset.stats`
 
@@ -286,6 +310,7 @@ vidlabel.samples.FrameSamples(
     normalized: bool = False,
     label_offset: int = 0,
     roots: Sequence[str | Path] = (),
+    cache: FrameCache | str | Path | None = None,
 )
 ```
 
@@ -308,6 +333,8 @@ Parameters (all keyword-only except `ds`):
 - `box_format`: `"xyxy"`, `"xywh"` or `"cxcywh"`; `normalized=True` gives fractions of the image size.
 - `label_offset`: added to class indices (e.g. `1` for detectors that reserve 0 for background).
 - `roots`: folders to search for videos whose recorded path is stale.
+- `cache`: a `FrameCache` (or the folder of one made by `vidlabel cache`). Frames it holds are read as image files
+  instead of decoded from video; anything missing falls back to the video. See docs/training.md.
 
 See docs/training.md for what a sample contains.
 
@@ -330,10 +357,12 @@ The frame numbers sampled from one video, in order.
 #### `vidlabel.samples.FrameSamples.reader`
 
 ```python
-reader(video_id: str) -> FrameReader
+reader(video_id: str)
 ```
 
-A FrameReader for one video, already set up with this object's view. Close it when done (or use `with`).
+A reader for one video (`read(frame)`, `read_many(frames)`, `close()`), already set up with this object's view.
+It uses the video's frame index when it has one, and the frame cache if there is one that matches the video.
+Close it when done (or use `with`).
 
 #### `vidlabel.samples.FrameSamples.sample`
 
@@ -423,14 +452,20 @@ Crop a displayed-orientation frame to a view's region and resize to its output_s
 ### `vidlabel.frames.seek_mismatches`
 
 ```python
-seek_mismatches(path: str | Path, meta: VideoMetadata, positions: Iterable[int]) -> list[int]
+seek_mismatches(
+    path: str | Path,
+    meta: VideoMetadata,
+    positions: Iterable[int],
+    index: FrameIndex | None = None,
+) -> list[int]
 ```
 
 Frames at `positions` for which seeking does NOT return exactly what sequential decoding returns.
 
 Empty means seeking is frame-exact at those positions. OpenCV's seek is exact for ordinary constant-frame-rate
 files but can land a few frames off on variable-frame-rate video or odd containers, which would silently misalign
-every box, so seeking is only used after this check (see `FrameReader`).
+every box, so without an index seeking is only used after this check (see `FrameReader`). With `index`, the reader
+under test is the indexed one.
 
 ### `vidlabel.frames.FrameReader`
 
@@ -442,22 +477,28 @@ vidlabel.frames.FrameReader(
     *,
     seek: str = 'auto',
     seek_threshold: int = 100,
+    index: FrameIndex | None = None,
 )
 ```
 
 Keeps one video open and reads frames by index.
 
-Reading forwards only decodes what is in between. Asking for an earlier frame, or one far ahead, normally means
-decoding from the start of the file; `seek` makes that cheap by jumping to the nearest keyframe first:
+Reading forwards only decodes what is in between. Asking for an earlier frame, or one far ahead, means decoding from
+a keyframe; `seek` and `index` decide how that is done:
 
-- `seek="auto"` (default): seek only if it has been verified for this file: not variable frame rate, and the frames
-  returned after seeking are identical to sequential decoding at a few test positions (checked once per file per
-  process, a short decode). Otherwise decode sequentially, with a warning.
-- `seek="off"`: never seek.
-- `seek="always"`: seek without checking (for tests and for `seek_mismatches`).
+- With `index` (a `FrameIndex`): the reader knows where the keyframes are, so it jumps only when that decodes fewer
+  frames than reading on, and never inside a keyframe interval it is already in. After every frame it compares the
+  decoder's timestamp with the index; if they ever disagree it warns and falls back to sequential decoding, so a
+  wrong frame is never returned silently. This works on variable-frame-rate video too. An index for a different
+  file (hash or frame count differs) is ignored with a warning.
+- Without an index, `seek="auto"` (default) seeks only if it has been verified for this file: not variable frame rate,
+  and the frames returned after seeking are identical to sequential decoding at a few test positions (checked once
+  per file per process). Otherwise it decodes sequentially, with a warning.
+- `seek="off"`: never seek (the index, if any, is not used).
+- `seek="always"`: seek without the pixel check (for tests and for `seek_mismatches`).
 
-For training prefer `VideoStream`, which reads each video front to back and never needs to seek.
-Not thread-safe; use one reader per process or thread.
+`read_many` reads several frames at once in the cheapest order. For training prefer `VideoStream`, which reads each
+video front to back. Not thread-safe; use one reader per process or thread.
 
 #### `vidlabel.frames.FrameReader.close`
 
@@ -475,9 +516,18 @@ read(index: int) -> np.ndarray
 
 RGB frame `index` in displayed orientation, cropped to the view if there is one.
 
+#### `vidlabel.frames.FrameReader.read_many`
+
+```python
+read_many(indices: Iterable[int]) -> list[np.ndarray]
+```
+
+Frames for `indices`, in the order given. They are read in increasing order so each keyframe interval is
+decoded once however the request is ordered; repeated indices are decoded once and copied.
+
 #### `vidlabel.frames.FrameReader.seek_enabled` (property)
 
-Whether this reader will use seeking (runs the one-off check in "auto" mode).
+Whether this reader will use seeking (without an index, runs the one-off check in "auto" mode).
 
 ### `vidlabel.preview.render_preview`
 
@@ -565,6 +615,121 @@ file_hash(path: str | Path) -> str
 ```
 
 `sha256:<hex>` of a file's contents.
+
+### `vidlabel.probe.probe_frame_index`
+
+```python
+probe_frame_index(path: str | Path, *, content_hash: str | None = None) -> FrameIndex
+```
+
+Read a video's per-frame timestamps and keyframes from its packet table with ffprobe. Nothing is decoded, so it takes
+seconds even for long videos. Pass `content_hash` (from the metadata) to record which file the index belongs to.
+Raises ValueError if the container has no timestamps (some raw streams), and RuntimeError without ffprobe.
+
+### `vidlabel.probe.reconcile_frame_count`
+
+```python
+reconcile_frame_count(meta: VideoMetadata, index: FrameIndex) -> VideoMetadata
+```
+
+Make `meta.frame_count` agree with `index`. If the count was only estimated when the video was probed, the index (an
+exact count) replaces it; a real disagreement raises ValueError, because one of the two describes a different file.
+
+## Frame cache (`vidlabel.cache`, needs OpenCV)
+
+### `vidlabel.cache.FrameCache`
+
+```python
+vidlabel.cache.FrameCache(root: str | Path)
+```
+
+Frames saved as `<root>/<video_id>/<frame>.jpg|png`, plus `<root>/cache.json` saying which video file each came from.
+
+Open an existing cache with `FrameCache(root)`; make or extend one with `FrameCache.build(samples, root)`.
+
+#### `vidlabel.cache.FrameCache.build`
+
+```python
+build(
+    samples,
+    root: str | Path,
+    *,
+    format: str = 'jpg',
+    quality: int = 95,
+    overwrite: bool = False,
+) -> tuple['FrameCache', CacheStats]
+```
+
+Decode every frame `samples` (a `FrameSamples`) will use, in order, and save it under `root`.
+
+Frames already cached are kept unless `overwrite=True`. Returns the cache and what was done. Needs OpenCV.
+
+#### `vidlabel.cache.FrameCache.has`
+
+```python
+has(video_id: str, frame: int) -> bool
+```
+
+#### `vidlabel.cache.FrameCache.read`
+
+```python
+read(video_id: str, frame: int) -> np.ndarray
+```
+
+The cached frame as an RGB uint8 array (whole frame, displayed orientation). KeyError if it is not cached.
+
+#### `vidlabel.cache.FrameCache.usable`
+
+```python
+usable(video_id: str, meta: VideoMetadata) -> bool
+```
+
+Whether this cache has frames for the video *as registered*: same file (hash) and same size.
+
+### `vidlabel.cache.CachedReader`
+
+```python
+vidlabel.cache.CachedReader(
+    cache: FrameCache,
+    video_id: str,
+    meta: VideoMetadata,
+    view: View | None,
+    fallback,
+)
+```
+
+Same interface as `FrameReader` (`read`, `read_many`, `close`), but frames come from a `FrameCache` when it has them
+and from the video file otherwise, so a partial cache is fine. Crops to `view` like `FrameReader` does.
+
+#### `vidlabel.cache.CachedReader.close`
+
+```python
+close() -> None
+```
+
+#### `vidlabel.cache.CachedReader.read`
+
+```python
+read(index: int)
+```
+
+#### `vidlabel.cache.CachedReader.read_many`
+
+```python
+read_many(indices: Iterable[int]) -> list
+```
+
+Frames for `indices` in the order given; frames missing from the cache are decoded together, in increasing order.
+
+### `vidlabel.cache.CacheStats`
+
+```python
+vidlabel.cache.CacheStats(written: int, skipped: int, bytes: int, seconds: float) -> None
+```
+
+What `FrameCache.build` did.
+
+#### `vidlabel.cache.CacheStats.mean_kb` (property)
 
 ## Masks (`vidlabel.masks`)
 
@@ -740,6 +905,23 @@ One known location of the video file. Several may be listed; paths move, hashes 
 | `uri` | `str` | required |  |
 | `note` | `str | None` | none |  |
 
+### `FrameIndex`
+
+Optional per-frame timing of one video, stored in videos/<video_id>/frame_index.json.
+
+Read from the file's packet table (no decoding), so it is cheap to make. It lets a reader seek by timestamp, including
+in variable-frame-rate video, check where a seek really landed, and plan reads so each keyframe interval is decoded once.
+
+`pts` holds one presentation timestamp per frame, in `timebase` ticks, in display order (so `pts[i]` belongs to frame
+`i`) and strictly increasing. `keyframes` lists the frame numbers where decoding can start without earlier frames.
+
+| field | type | default | description |
+|---|---|---|---|
+| `content_hash` | `str | None` | none | Hash of the file this was read from; a different hash means the index is stale. |
+| `timebase` | `Rational` | required |  |
+| `pts` | `list[int]` | required |  |
+| `keyframes` | `list[int]` | empty |  |
+
 ### `Rational`
 
 | field | type | default | description |
@@ -799,7 +981,7 @@ Dataset-level index. Lives in manifest.json.
 
 | field | type | default | description |
 |---|---|---|---|
-| `spec_version` | `str` | '0.4.0' |  |
+| `spec_version` | `str` | '0.5.0' |  |
 | `videos` | `list[str]` | empty |  |
 | `views` | `list[str]` | empty |  |
 | `vocab_version` | `str | None` | none |  |

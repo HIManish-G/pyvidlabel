@@ -116,29 +116,82 @@ Without PyTorch, loop over `samples.index` yourself: `samples.reader(video_id)` 
 
 ## Reading video quickly: stream, do not shuffle
 
-Video is stored as chains of frames, so reading frame N normally means decoding from the start of the file. The two
-PyTorch datasets reflect that:
+Video is stored as chains of frames: most frames are only the *difference* from earlier ones, and decoding can only start at
+a **keyframe**. Reading frame N therefore costs a decode from the keyframe before it. With a keyframe every 250 frames (common
+for H.264), an average random frame means decoding about 125 frames. The two PyTorch datasets reflect that:
 
 - **`VideoStream`** (recommended) is an iterable dataset that visits each video **once, front to back**, so every frame
   is decoded at most once per epoch. Whole videos are shared between DataLoader workers and distributed ranks (use at least
   as many videos as workers). Randomness comes from `shuffle_videos=True` (video order, reseeded by `set_epoch(n)`) and a
   `shuffle_buffer` of samples. Seeded and deterministic. Measured: about 90 to 110 samples per second in one process on a
   720p clip.
-- **`VideoFrames`** is map-style (`dataset[i]`), so any sampler works. Going backwards in a video costs a re-decode, so it
-  is for validation, debugging and small datasets. Measured on a 720p clip, shuffled access ran at 2 to 16 samples per
-  second depending on how often the video has keyframes.
+- **`VideoFrames`** is map-style (`dataset[i]`), so any sampler works, but every random frame pays the keyframe cost above.
+  It is for validation, debugging, small datasets, and (with the cache below) random sampling.
 
 Because streaming gives neighbouring frames of one video in a row, batches are less varied than a full shuffle;
 `shuffle_buffer` and many videos reduce that.
 
-### Seeking, and when it is not used
+### What random access costs
 
-`FrameReader` (what `VideoFrames` uses) can jump to the nearest keyframe instead of decoding from the start: reading
-frame 17,000 of a 10-minute clip dropped from 3.8 s to 0.01 s. OpenCV's seek is exact for ordinary constant-frame-rate
-files but was measurably **wrong on variable-frame-rate video** (about three frames in four were off by several frames in
-our test), which would silently misalign every box. So seeking is used only after a one-off check, per video and
-process (about a second), that it returns exactly the frames sequential decoding does; videos flagged variable-rate, or
-that fail the check, are read sequentially with a warning. `vidlabel check-video my_dataset clip --seek` runs a wider check.
+Measured on one machine with a synthetic 1280x720 H.264 clip (3000 frames, a keyframe every 250), one CPU process, 120 random
+frames. Expect different absolute numbers on real footage and hardware; the ratios are what to take away.
+
+| how the frames are read | frames per second |
+|---|---|
+| every frame in order (what `VideoStream` does) | about 400 |
+| random frames, one at a time | about 6 (170 ms each) |
+| random frames read as a batch of 8, 32, 120 (`read_many`) | about 7, 10, 28 |
+| random frames from a JPEG frame cache | about 350 (3 ms each) |
+| random frames from a PNG frame cache | about 135 (7 ms each) |
+
+### The frame index
+
+`vidlabel add-video` also writes a **frame index**, and `vidlabel index my_dataset` adds one to videos registered without it:
+the timestamp of every frame and which frames are keyframes, read from the container without decoding (seconds, even for long
+videos). `FrameReader` (what the loaders use) picks it up automatically and then:
+
+- **jumps only when it saves work.** Inside the keyframe interval it is already in, it reads on; it seeks when the target is
+  behind it or a keyframe is much nearer than reading on.
+- **checks every frame it returns** against the index: the decoder's timestamp must be the one stored for that frame. If
+  they ever disagree it warns, ignores the index and decodes sequentially, so a wrong frame is never returned silently.
+- **works on variable-frame-rate video.** OpenCV's seek-by-frame-number was measured to be wrong there (29 of 40 jumps landed on
+  the wrong frame); the reader aims by time instead and corrects itself from the index.
+
+The index does **not** make decoding cheaper: a single random read is as slow as before (166 ms against 173 ms in the table
+above). What it buys is correctness on variable-frame-rate video, no more one-off pixel check per file, and the ability to
+plan reads (next section). An index for another file (hash or frame count differs) is ignored with a warning;
+`vidlabel validate` reports `frame_index_stale` and `frame_index_length`.
+
+Without an index the reader behaves as before: it seeks only after a one-off per-file pixel comparison with sequential
+decoding, never in variable-frame-rate video, and warns if the check fails.
+
+### Reading a batch: `read_many`
+
+`FrameReader.read_many(frames)` returns the frames in the order asked but reads them in increasing order, so each keyframe
+interval is decoded once however the request is ordered. A `DataLoader` over `VideoFrames` with `batch_size > 1` uses this
+automatically (`VideoFrames.__getitems__`), grouping the batch by video. The gain depends on how many frames of a batch share a
+keyframe interval, which is why the table shows 1.2x at 8 frames and 4.8x at 120 for a video with only 12 intervals. Large
+batches from few videos benefit most; a batch of 8 frames from 8 different videos benefits not at all.
+
+### Making random access fast
+
+If you need uniform random sampling, make the frames cheap to reach. `vidlabel check-video my_dataset clip` shows the keyframe
+spacing and the average decode cost per random frame, and prints the fix when it is high. Two options:
+
+1. **A frame cache** (nothing about the dataset changes):
+
+   ```bash
+   vidlabel cache my_dataset /fast/disk/frames --release latest
+   ```
+
+   decodes exactly the frames a run will use, in order and at full speed, and saves them as JPEG (about 88 KB each at 720p)
+   or PNG (`--format png`, exact pixels, about 175 KB). Then `FrameSamples(ds, cache="/fast/disk/frames")` reads them as image
+   files, and anything not cached falls back to the video. Building runs at about 50 (JPEG) or 25 (PNG) frames per second
+   in our test. The cache is *derived* data: it lives outside the dataset, can be deleted and rebuilt any time, records the
+   content hash of each video and is ignored for a video whose file changed, and holds whole frames so one cache serves every view.
+   JPEG is lossy: pixels differ slightly from decoding the video.
+2. **Re-encode with more keyframes** (`-g 30`, shown by `check-video`): about 8 times less decoding per random frame, at the
+   cost of a larger file. It makes a *different* file with slightly different pixels, so register it as a new video.
 
 ## Several pipelines: views
 
