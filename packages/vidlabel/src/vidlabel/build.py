@@ -77,7 +77,8 @@ def build(ds: Dataset, *, statuses: Sequence[str] = ("unreviewed", "approved"), 
         (final / "release.json").write_text(release.model_dump_json(indent=2), encoding="utf-8")
     else:
         release = Release.model_validate_json((final / "release.json").read_text(encoding="utf-8"))
-    (out_root / "LATEST").write_text(release_id + "\n", encoding="utf-8")
+    if "rejected" not in statuses:      # a release with rejected rows is for inspection: it must not become what "latest" means
+        (out_root / "LATEST").write_text(release_id + "\n", encoding="utf-8")
     return release, final
 
 

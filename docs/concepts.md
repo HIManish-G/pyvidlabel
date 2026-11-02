@@ -142,7 +142,7 @@ for custom data, in the annotation table and in every metadata object.
 ### Status
 
 `unreviewed` (the default), `approved`, `rejected`. A rejected annotation is kept in the file, so a reviewer's decision is
-not lost, but `build` leaves it out unless you pass `--include-rejected`.
+not lost, but `build` leaves it out unless you pass `--include-rejected`. A release that includes rejected rows is for inspection, so `latest` is not moved to it; refer to it by its id.
 
 ### Tracks
 

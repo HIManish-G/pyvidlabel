@@ -73,19 +73,25 @@ class PreviewStyle:
 
 
 def parse_frames(spec: str, frame_count: int) -> list[int]:
-    """'10,20,30-40' -> [10, 20, 30..40]. A trailing '-' means to the end ('100-'). Clipped to the video."""
+    """'10,20,30-40' -> [10, 20, 30..40]. A trailing '-' means to the end ('100-'). Clipped to the video; an error if nothing is left."""
     out: list[int] = []
-    for part in spec.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        if "-" in part:
-            a, b = part.split("-", 1)
-            lo, hi = int(a or 0), int(b) if b else frame_count - 1
-            out.extend(range(lo, hi + 1))
-        else:
-            out.append(int(part))
-    return sorted({f for f in out if 0 <= f < frame_count})
+    try:
+        for part in spec.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if "-" in part:
+                a, b = part.split("-", 1)
+                lo, hi = int(a or 0), int(b) if b else frame_count - 1
+                out.extend(range(lo, hi + 1))
+            else:
+                out.append(int(part))
+    except ValueError:
+        raise ValueError(f"cannot read frames '{spec}': use numbers and ranges such as '0-100,250'") from None
+    chosen = sorted({f for f in out if 0 <= f < frame_count})
+    if not chosen:
+        raise ValueError(f"frames '{spec}' select none of this video's frames (it has frames 0-{frame_count - 1})")
+    return chosen
 
 
 def choose_frames(rows: Sequence[dict], frame_count: int, limit: int = 12) -> list[int]:

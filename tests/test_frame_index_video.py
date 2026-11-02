@@ -221,7 +221,7 @@ def test_check_video_reports_keyframes_and_suggests_a_fix(tmp_path, cfr):
     res = r.invoke(app, ["check-video", str(d.path), "a"])
     assert res.exit_code == 0, res.output
     assert "no stored frame index" in res.output and "keyframes: every" in res.output
-    assert "ffmpeg -i cfr.mp4" in res.output and "-g 30" in res.output and "different file" in res.output
+    assert "ffmpeg -i cfr.mp4" in res.output and "-g 30" in res.output and "usually larger" in res.output
     assert r.invoke(app, ["index", str(d.path)]).exit_code == 0
     res = r.invoke(app, ["check-video", str(d.path), "a", "--seek"])
     assert res.exit_code == 0 and "no stored frame index" not in res.output

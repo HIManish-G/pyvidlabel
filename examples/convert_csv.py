@@ -22,8 +22,8 @@ def convert(ds: Dataset, csv_path: str | Path, video_id: str, *, tool: str = "cs
             replace: bool = True) -> list[int]:
     """Add the boxes in `csv_path` to `video_id`. Returns the new annotation ids.
 
-    replace=True first removes what an earlier run of this converter added to the video, so re-running does not
-    duplicate rows.
+    replace=True first removes what an earlier run of this converter added to the video and nobody has reviewed yet, so
+    re-running does not duplicate rows and does not wipe anyone's approvals or rejections.
     """
     rows = []
     with open(csv_path, newline="", encoding="utf-8") as f:
@@ -42,7 +42,7 @@ def convert(ds: Dataset, csv_path: str | Path, video_id: str, *, tool: str = "cs
                 "extra": {"csv_line": line_no},                           # anything else worth keeping, under your own key
             })
     if replace:
-        old = ds.annotations(video_id, origin="imported", columns=["annotation_id", "tool"])
+        old = ds.annotations(video_id, origin="imported", status=["unreviewed"], columns=["annotation_id", "tool"])
         mine = [i for i, t in zip(old.column("annotation_id").to_pylist(), old.column("tool").to_pylist()) if t == tool]
         ds.delete_annotations(video_id, mine)
     # create_labels=True adds unseen labels to the vocabulary; leave it off to make unknown labels an error instead.

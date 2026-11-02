@@ -16,7 +16,7 @@ A **view** is a named region and/or frame range of one video, stored in `views/<
 | `view_id`, `video_id` | the view's name and the video it belongs to |
 | `region` | `x, y, width, height` in displayed pixels: the crop; omit for the whole frame |
 | `output_size` | `(width, height)` the crop is resized to before the pipeline sees it; omit if it is not resized. Needs a `region` |
-| `frame_range` | `[first, last]` inclusive: only these frames are processed in this view |
+| `frame_range` | `[first, last]` inclusive: only these frames are processed in this view (one range per view: December to February of a year that wraps needs two views) |
 | `allowed_labels` | if set, annotations in this view may only use these labels (all must be in the vocabulary) |
 
 Views of one video may overlap and coexist.
@@ -88,6 +88,12 @@ ds.annotations("clip", view_id=["lower_strip", None]).num_rows   # 2: both
 Rows tagged with a view must lie **inside** it: the box within the view's region, the frames within its `frame_range`,
 the label in its `allowed_labels`, and the view must belong to the same video. A view whose region falls outside the
 video, or whose `allowed_labels` are not in the vocabulary, is rejected when you add it.
+
+A view is a **tag on rows**, not a filter on the video. `frame_range` and `region` say what the pipeline that made the rows
+looked at, and `FrameSamples(view_id=...)` selects the rows tagged with that view. A view with no tagged rows gives no samples (and
+a warning), however many whole-frame rows lie inside its crop. Conversely, `FrameSamples` without a `view_id` uses *all* rows,
+including view-tagged ones: markers tagged with a view fill `frame_labels` of full-frame samples too. To keep them apart, build
+the full-frame samples from a release made without those views, or filter with `labels=` and `origins=`.
 
 ## Using views downstream
 

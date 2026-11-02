@@ -177,6 +177,10 @@ vidlabel validate cli_dataset
 vidlabel build cli_dataset
 ```
 
+Label names can be separated by spaces or commas. A mistake (a wrong path, a file that is not a video, a name already taken)
+prints one `[error] ...` line and exits with code 1; set `VIDLABEL_DEBUG=1` to see the Python traceback instead. Building a
+release with no annotations works but prints a note, so an empty release is not pinned by accident.
+
 ## Next
 
 - [Concepts](concepts.md): the model in detail

@@ -205,6 +205,7 @@ class FrameReader:
         self._cap = None
         self._pos = 0  # index of the next frame the decoder will return
         self._cap_rotates = False
+        self._length_checked = False
 
     @property
     def _indexed(self) -> bool:
@@ -235,6 +236,18 @@ class FrameReader:
         self._cap = _open(self.path)
         self._cap_rotates = bool(self._cap.get(_cv2().CAP_PROP_ORIENTATION_AUTO))
         self._pos = 0
+        self._check_length()
+
+    def _check_length(self) -> None:
+        """Warn once per reader if the file has clearly more or fewer frames than were registered (a trimmed or extended copy
+        would otherwise shift every label silently). Cheap, and approximate: it cannot see a small trim or a same-length re-encode."""
+        if self._length_checked:
+            return
+        self._length_checked = True
+        want, got = self.meta.frame_count, int(self._cap.get(_cv2().CAP_PROP_FRAME_COUNT))
+        if want and got and not self.meta.extra.get("frame_count_estimated") and abs(got - want) > max(2, want // 500):
+            warnings.warn(f"{self.path.name} has about {got} frames but {want} were registered: it may be a trimmed or different "
+                          f"copy, so labels may not line up. Check it with `vidlabel check-video --hash`.", RuntimeWarning, stacklevel=3)
 
     def _frame_here(self) -> int | None:
         """Frame number of the frame the decoder just produced, from its timestamp and the index (None if it matches no frame)."""

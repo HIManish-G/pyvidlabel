@@ -58,7 +58,7 @@ class Dataset:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         if not (self.path / "manifest.json").exists():
-            raise FileNotFoundError(f"{self.path} is not a vidlabel dataset (no manifest.json). Use Dataset.create().")
+            raise FileNotFoundError(f"{self.path} is not a vidlabel dataset (no manifest.json). Make one with `vidlabel init` or Dataset.create().")
 
     # ---- construction ----
     @classmethod
@@ -260,6 +260,12 @@ class Dataset:
             used = set(existing.column("annotation_id").to_pylist())
             if coords == "view":
                 group = self._rows_view_to_source(group, vid, views_map)
+            W, H = self.video(vid).display_size
+            for i, r in enumerate(group):
+                m = r.get("mask")
+                if m is not None and hasattr(m, "shape") and tuple(m.shape) != (H, W):
+                    raise ValueError(f"row {i}: the mask is {m.shape[-1]}x{m.shape[0]} but video '{vid}' is {W}x{H}; a mask must "
+                                     f"cover the whole frame (or pass coords='view' for a mask drawn in a view's pixels)")
             new = _rows_to_table(group, vid, used)
             if validate:
                 meta = self.video(vid)
@@ -335,7 +341,8 @@ class Dataset:
         """Set columns (e.g. status='approved', label='x') on the given annotations. Returns rows changed."""
         bad = set(values) - (set(COLUMN_NAMES) - _IMMUTABLE)
         if bad:
-            raise ValueError(f"cannot update {sorted(bad)}")
+            hint = "; set x0, y0, x1, y1 instead of box" if "box" in bad else ""
+            raise ValueError(f"cannot update {sorted(bad)}{hint}")
         t = self._existing(video_id)
         sel = pc.is_in(t.column("annotation_id"), value_set=pa.array(list(annotation_ids), type=pa.int64()))
         n = int(pc.sum(sel.cast(pa.int8())).as_py() or 0)
@@ -343,7 +350,7 @@ class Dataset:
             return 0
         for k, v in values.items():
             if k == "extra" and not isinstance(v, str) and v is not None:
-                v = json.dumps(v, sort_keys=True)
+                v = _json_extra(v)
             elif k == "kind":
                 v = _enum_value(v, Kind, k)
             elif k == "origin":
@@ -382,6 +389,9 @@ class Dataset:
             if val is None:
                 continue
             vals = [val] if isinstance(val, str) else list(val)
+            allowed = {"kind": [e.value for e in Kind], "status": [e.value for e in Status]}.get(name)
+            if allowed is not None and (bad := [v for v in vals if v not in allowed]):
+                raise ValueError(f"unknown {name} {bad}; use one of {allowed}")
             add(pads.field(name).isin(vals))
         if view_id is not None:
             vals = [view_id] if isinstance(view_id, str) else list(view_id)
@@ -429,6 +439,22 @@ class Dataset:
         return _build(self, **kwargs)
 
 
+def _json_extra(ex: Any) -> str:
+    """`extra` as JSON text. NumPy numbers and arrays are converted; NaN and infinity (not valid JSON) are refused."""
+    def default(o):
+        if isinstance(o, np.generic):
+            return o.item()
+        if isinstance(o, np.ndarray):
+            return o.tolist()
+        raise TypeError(f"{type(o).__name__} is not JSON-serializable")
+    try:
+        return json.dumps(ex, sort_keys=True, allow_nan=False, default=default)
+    except ValueError:
+        raise ValueError("extra holds NaN or infinity, which JSON cannot store; use None or leave the key out") from None
+    except TypeError as e:
+        raise ValueError(f"extra must be JSON: {e} (convert it, e.g. float(x) or str(x))") from None
+
+
 def _rows_to_table(rows: Sequence[Mapping[str, Any]], video_id: str, used_ids: set[int]) -> pa.Table:
     cols: dict[str, list] = {n: [] for n in COLUMN_NAMES}
     for i, raw in enumerate(rows):
@@ -467,7 +493,7 @@ def _rows_to_table(rows: Sequence[Mapping[str, Any]], video_id: str, used_ids: s
                     r["x0"], r["y0"], r["x1"], r["y1"] = bb
         ex = r.get("extra")
         if ex is not None and not isinstance(ex, str):
-            r["extra"] = json.dumps(ex, sort_keys=True)
+            r["extra"] = _json_extra(ex)
         aid = r.get("annotation_id")
         if aid is None:
             aid = secrets.randbits(63)

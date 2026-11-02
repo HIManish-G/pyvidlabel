@@ -51,14 +51,25 @@ def _rotation(stream: dict) -> tuple[int, float | None]:
     return int(snapped) % 360, None
 
 
+def _ffprobe(args: list[str], path: Path) -> str:
+    """Run ffprobe on `path` and return its output. A file that is missing or is not a video gives a short error, not a CalledProcessError."""
+    if not path.is_file():
+        raise FileNotFoundError(f"no such video file: {path}")
+    try:
+        return subprocess.run(["ffprobe", "-v", "error", *args, str(path)], capture_output=True, text=True, check=True).stdout
+    except subprocess.CalledProcessError as e:
+        detail = (e.stderr or "").strip().splitlines()
+        why = detail[-1].replace(f"{path}: ", "") if detail else ""
+        raise ValueError(f"ffprobe could not read '{path.name}' as a video" + (f" ({why})" if why else "")) from None
+
+
 def probe_video(path: str | Path, video_id: str | None = None, *, hash: bool = True) -> VideoMetadata:
     """Read a video's facts with ffprobe (size, fps as a fraction, frame count, rotation, codec, bit rate) and hash the file
     unless `hash=False`. Needs `ffprobe` on the PATH. `video_id` defaults to the file name without extension."""
     if shutil.which("ffprobe") is None:
         raise RuntimeError("ffprobe not found; install ffmpeg or build VideoMetadata by hand")
     p = Path(path).resolve()
-    raw = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_streams", "-show_format",
-                          "-of", "json", str(p)], capture_output=True, text=True, check=True).stdout
+    raw = _ffprobe(["-select_streams", "v:0", "-show_streams", "-show_format", "-of", "json"], p)
     info = json.loads(raw)
     if not info.get("streams"):
         raise ValueError(f"{p} has no video stream")
@@ -97,13 +108,11 @@ def probe_frame_index(path: str | Path, *, content_hash: str | None = None) -> F
     if shutil.which("ffprobe") is None:
         raise RuntimeError("ffprobe not found; install ffmpeg")
     p = Path(path).resolve()
-    tb_out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=time_base",
-                             "-of", "csv=p=0", str(p)], capture_output=True, text=True, check=True).stdout.strip()
+    tb_out = _ffprobe(["-select_streams", "v:0", "-show_entries", "stream=time_base", "-of", "csv=p=0"], p).strip()
     tb = _frac(tb_out.splitlines()[0]) if tb_out else None
     if tb is None:
         raise ValueError(f"{p.name}: could not read the video time base")
-    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts,flags",
-                          "-of", "csv=p=0", str(p)], capture_output=True, text=True, check=True).stdout
+    out = _ffprobe(["-select_streams", "v:0", "-show_entries", "packet=pts,flags", "-of", "csv=p=0"], p)
     packets: list[tuple[int, bool]] = []
     for line in out.splitlines():
         pts, _, flags = line.partition(",")

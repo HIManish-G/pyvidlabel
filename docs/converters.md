@@ -44,8 +44,8 @@ def convert(ds: Dataset, csv_path: str | Path, video_id: str, *, tool: str = "cs
             replace: bool = True) -> list[int]:
     """Add the boxes in `csv_path` to `video_id`. Returns the new annotation ids.
 
-    replace=True first removes what an earlier run of this converter added to the video, so re-running does not
-    duplicate rows.
+    replace=True first removes what an earlier run of this converter added to the video and nobody has reviewed yet, so
+    re-running does not duplicate rows and does not wipe anyone's approvals or rejections.
     """
     rows = []
     with open(csv_path, newline="", encoding="utf-8") as f:
@@ -64,7 +64,7 @@ def convert(ds: Dataset, csv_path: str | Path, video_id: str, *, tool: str = "cs
                 "extra": {"csv_line": line_no},                           # anything else worth keeping, under your own key
             })
     if replace:
-        old = ds.annotations(video_id, origin="imported", columns=["annotation_id", "tool"])
+        old = ds.annotations(video_id, origin="imported", status=["unreviewed"], columns=["annotation_id", "tool"])
         mine = [i for i, t in zip(old.column("annotation_id").to_pylist(), old.column("tool").to_pylist()) if t == tool]
         ds.delete_annotations(video_id, mine)
     # create_labels=True adds unseen labels to the vocabulary; leave it off to make unknown labels an error instead.
@@ -81,10 +81,23 @@ if __name__ == "__main__":
 
 Run it with `python examples/convert_csv.py my_dataset clip detections.csv`.
 
+**Re-running.** The example deletes only rows still `unreviewed`, so a second run replaces the raw output but keeps what people
+have approved or rejected. To take an object out of the data, **reject** its rows (`status="rejected"`) instead of deleting them:
+deleted rows come back the next time the converter runs, rejected ones stay out. If your converter gives its rows stable ids or
+a stable key in `extra`, you can also skip rows that already exist instead of deleting.
+
+**Provenance.** Say where rows came from on the row itself: `origin`, `tool`, `tool_version`, and in `extra` anything else
+that reproduces them (thresholds, the source product, the script's git commit). A video's own `extra` (in `metadata.json`)
+holds facts about the source. To reproduce a *release*, share the dataset folder: a release id is a hash of the rows, and the
+rows carry random ids, so rerunning a converter into a new dataset gives a different release id even with the same content.
+
 ## The checklist: decisions every converter must make
 
 **Frame numbering.** vidlabel frames are 0-based. Some formats count from 1 (MOT does). Check against
-`ds.video(video_id).frame_count`: the validator rejects frames past the end (`frame_out_of_range`).
+`ds.video(video_id).frame_count`: the validator rejects frames past the end (`frame_out_of_range`). That check only fires if
+the *last* frame happens to be labelled, so compare the source's smallest and largest frame number with the video yourself:
+labels running from 1 to `frame_count` mean the source is 1-based (SLEAP's `frameIdx` is), and subtracting 1 fixes it.
+Judging this by eye on an overlay does not work when things move a few pixels per frame.
 
 **Coordinates.** Stored boxes are pixel corners `(x0, y0, x1, y1)`, origin top-left, `x1`/`y1` exclusive, **in the
 displayed orientation**. Convert whatever your source uses with `convert_boxes`:

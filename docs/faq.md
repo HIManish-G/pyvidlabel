@@ -34,6 +34,23 @@ checking, or find the original file.
 **"video frame is WxH but the metadata says ..."**
 The file's frame size does not match what was registered: wrong file.
 
+**How do I know the video is still the one my labels were made on?**
+It depends on what changed. A table of what each check can see:
+
+| the file is now... | `check-video` | `check-video --hash` | the loader (`FrameReader`) |
+|---|---|---|---|
+| the same file | ok | ok | reads it |
+| a different size | error (frame size) | error | raises "this is not the file that was registered" |
+| clearly shorter or longer (trimmed) | error (frame count) | error | warns that the file has a different frame count |
+| re-timed | error (timestamps differ from the stored index) | error | with an index, a frame whose timestamp is wrong is caught and decoding falls back to reading in order, with a warning |
+| re-encoded, same size, length and timing | ok, with a note that the keyframes differ | error (hash) | reads it: the pixels are slightly different |
+| a flipped or colour-changed copy, same size and timing | ok (note: the hash was not checked) | error (hash) | reads it: nothing can tell |
+
+So the default `check-video` is a cheap consistency check, not proof of identity, and the loader's frame-count warning is a rough guard that only sees large changes (a trim of a few frames reads without any warning). For identity use `--hash`, which reads the
+whole file, or register the video with its hash (the default) and compare it yourself. A small trim that cuts frames off the start
+and leaves the rest evenly timed shifts every label by the same number of frames, which only the hash reveals. Releases do not
+store video hashes, so the loader never reads a whole file to check.
+
 **The recorded video path is wrong on this machine.**
 Paths are hints. Pass `--video-path file.mp4`, or `--root some/folder` to search by file name (`roots=[...]` in Python).
 

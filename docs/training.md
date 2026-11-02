@@ -56,6 +56,18 @@ if __name__ == "__main__":                      # required on Windows and macOS 
 Markers never become boxes. They fill `frame_labels`, which is how "this part of the video is a goal" reaches a
 classifier or a temporal model alongside the box targets.
 
+With plain NumPy there is no `samples[i]`. `samples.index` is the list of `(video_id, frame)` pairs, and you read one sample
+through a reader:
+
+```python
+video_id, frame = samples.index[10]
+with samples.reader(video_id) as reader:                       # a FrameReader (or CachedReader), cropped to the view
+    sample = samples.sample(video_id, frame, reader.read(frame))
+```
+
+For many samples use `iter_plan` below, or `VideoFrames` / `VideoStream` with PyTorch. `FrameReader` itself is
+`from vidlabel.frames import FrameReader`.
+
 ## Choosing what to train on
 
 `FrameSamples(ds, ...)` takes:
@@ -76,6 +88,12 @@ classifier or a temporal model alongside the box targets.
 | `normalized` | `False` | boxes as fractions of the image size (YOLO files use `cxcywh` normalized) |
 | `label_offset` | `0` | added to class indices, e.g. `1` for detectors that reserve 0 for background |
 | `roots` | `()` | folders to search for videos whose recorded path is stale |
+
+A box and a mask stored for the *same object* are two rows, so `kinds=("box", "mask")` returns the object twice (once with its
+mask, once with the same box and an empty mask on the box row). Pick the kind your model wants, or store only masks (their box is
+filled in). Boxes and markers share one `class_names` list: object classes and behaviour classes are numbered together, and
+`frame_labels` is indexed by `class_names` *without* `label_offset`. Use `labels=[...]` to build separate `FrameSamples` for
+objects and for behaviours when you want separate class spaces.
 
 Stored boxes are always pixel corners; `box_format` only changes what training code receives
 ([why](design-decisions.md#boxes-are-stored-as-pixel-corners)). Which frames to use is decided **from the annotation
@@ -143,6 +161,14 @@ frames. Expect different absolute numbers on real footage and hardware; the rati
 | random frames read as a batch of 8, 32, 120 (`read_many`) | about 7, 10, 28 |
 | random frames from a JPEG frame cache | about 350 (3 ms each) |
 | random frames from a PNG frame cache | about 135 (7 ms each) |
+
+On real clips, small ones included, a random read has a **floor of roughly 25 to 30 ms** that more keyframes cannot remove: it
+is OpenCV's seek itself. Three clips (384x384 with a keyframe every 150 frames, 424x200 every 14, 640x480 every 30) all
+measured 36 to 40 frames per second for a raw seek-and-read. Re-encoding helps while decoding from the keyframe is the
+expensive part (a 640x480 clip with a keyframe every 203 frames went from 14 to 36 per second with `-g 30`) and stops helping
+after that. The remedies that go past the floor are `read_many`, `ReadPlan` and the frame cache, below. On the 1,100-frame
+384x384 clip, 300 random frames ran at 33 per second one at a time, 370 per second as a `ReadPlan`, and 911 per second as a
+`ReadPlan` on a JPEG cache.
 
 ### The frame index
 
@@ -241,6 +267,13 @@ The plan decodes each interval at most once, so its cost is capped by the length
 while reading one at a time pays a keyframe interval's decoding for every draw. Repeated draws of a frame come from one decode,
 which is part of why the larger rows are fast. Real footage and hardware will change the absolute numbers.
 
+### How big a dataset can be
+
+Measured with 100 videos and 1,000,000 box annotations (one machine, no video files needed): writing them took 20 s,
+`vidlabel validate` 5.5 s, `vidlabel build` 6 s, and the dataset is 83 MB on disk. Opening a `FrameSamples` over the
+787,000 annotated frames takes about 0.6 s and 0.5 GB of memory, and `targets()` runs at about 50,000 frames per second. With `with_masks=True`
+the mask bytes of the selected rows are held in memory too, so narrow the selection (`videos=`, `labels=`, `view_id=`) for mask-heavy data.
+
 ### Making random access fast
 
 If you need uniform random sampling, make the frames cheap to reach. `vidlabel check-video my_dataset clip` shows the keyframe
@@ -259,7 +292,7 @@ spacing and the average decode cost per random frame, and prints the fix when it
    content hash of each video and is ignored for a video whose file changed, and holds whole frames so one cache serves every view.
    JPEG is lossy: pixels differ slightly from decoding the video.
 2. **Re-encode with more keyframes** (`-g 30`, shown by `check-video`): about 8 times less decoding per random frame, at the
-   cost of a larger file. It makes a *different* file with slightly different pixels, so register it as a new video.
+   cost of a larger file (about twice the size on one test clip) and a floor on the speed-up (see above). It makes a *different* file with slightly different pixels, so register it as a new video.
 
 ## Several pipelines: views
 

@@ -15,6 +15,7 @@ A sample is a dict of NumPy arrays:
 from __future__ import annotations
 
 import random
+import warnings
 from collections import OrderedDict
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
@@ -32,6 +33,9 @@ from .cache import CachedReader, FrameCache
 from .frames import FrameReader, crop_mask_to_view
 from .readplan import FALLBACK_BLOCK, ReadPlan
 
+_KINDS = ("box", "mask", "marker")
+_MARKER = _KINDS.index("marker")
+_KEY = 1 << 32           # (video code, frame) -> one integer sort key: code * _KEY + frame
 _BASE_COLUMNS = ["annotation_id", "video_id", "start_frame", "end_frame", "kind", "label", "track_id",
                  "x0", "y0", "x1", "y1", "view_id", "origin", "confidence"]
 
@@ -100,17 +104,11 @@ class FrameSamples:
             keep = pc.and_(keep, pc.is_in(table.column("origin"), value_set=pa.array(list(origins), pa.string())))
         if min_confidence is not None:
             keep = pc.and_(keep, pc.fill_null(pc.greater_equal(table.column("confidence"), min_confidence), True))
-        self._rows = table.filter(keep).to_pylist()
-
-        self._points: dict[tuple[str, int], list[int]] = {}   # (video, frame) -> row indices, single-frame rows
-        self._spans: dict[str, list[tuple[int, int, int]]] = {}  # video -> (start, end, row index) for multi-frame rows
-        for i, r in enumerate(self._rows):
-            if r["start_frame"] == r["end_frame"]:
-                self._points.setdefault((r["video_id"], r["start_frame"]), []).append(i)
-            else:
-                self._spans.setdefault(r["video_id"], []).append((r["start_frame"], r["end_frame"], i))
+        self._store(table.filter(keep))
 
         video_ids = list(videos) if videos is not None else ds.video_ids()
+        if self.view is not None:                       # a view is a crop of one video, not of the others
+            video_ids = [v for v in video_ids if v == self.view.video_id]
         self._videos = [v for v in video_ids if v in set(ds.video_ids())]
         self.index: list[tuple[str, int]] = []
         self._by_video: dict[str, list[int]] = {}
@@ -119,6 +117,47 @@ class FrameSamples:
             if fr:
                 self._by_video[vid] = fr
                 self.index.extend((vid, f) for f in fr)
+        if view_id and not self.index:
+            warnings.warn(f"view '{view_id}' selects no samples. Only rows labelled with view_id='{view_id}' belong to a view; "
+                          f"rows labelled on the whole frame do not (see docs/views.md).", RuntimeWarning, stacklevel=2)
+
+    # ---- the selected rows, kept as columns ----
+    def _store(self, table: pa.Table) -> None:
+        """Keep the selected rows as NumPy columns and a sorted `(video, frame)` index. One Python dict per row would cost
+        about 1.5 KB each (1.6 GB for 800,000 annotations) and every DataLoader worker would hold its own copy."""
+        n = table.num_rows
+
+        def col(name, dtype, fill):
+            if n == 0:
+                return np.zeros(0, dtype)
+            a = table.column(name).combine_chunks()
+            return pc.fill_null(a, fill).to_numpy(zero_copy_only=False).astype(dtype)
+
+        if n:
+            enc = pc.dictionary_encode(table.column("video_id").combine_chunks())
+            self._vnames = enc.dictionary.to_pylist()
+            vcode = enc.indices.to_numpy(zero_copy_only=False).astype(np.int64)
+            lab = pc.dictionary_encode(table.column("label").combine_chunks())
+            lut = np.array([self._class_of[x] for x in lab.dictionary.to_pylist()], np.int64)
+            self._label = lut[lab.indices.to_numpy(zero_copy_only=False)]
+            kind = pc.index_in(table.column("kind").combine_chunks(), value_set=pa.array(list(_KINDS)))
+            self._kind = pc.fill_null(kind, -1).to_numpy(zero_copy_only=False).astype(np.int8)
+        else:
+            self._vnames, vcode = [], np.zeros(0, np.int64)
+            self._label, self._kind = np.zeros(0, np.int64), np.zeros(0, np.int8)
+        self._vcode_of = {v: i for i, v in enumerate(self._vnames)}
+        self._start, self._end = col("start_frame", np.int64, 0), col("end_frame", np.int64, 0)
+        self._box = np.stack([col(c, np.float64, np.nan) for c in ("x0", "y0", "x1", "y1")], axis=1) if n else np.zeros((0, 4))
+        self._track, self._ann_id = col("track_id", np.int64, -1), col("annotation_id", np.int64, 0)
+        self._mask = table.column("mask") if "mask" in table.column_names else None
+
+        single = np.nonzero((self._start == self._end) & (self._start >= 0))[0]
+        key = vcode[single] * _KEY + self._start[single]
+        order = np.argsort(key, kind="stable")          # stable: rows of one frame stay in table order
+        self._pkey, self._prow = key[order], single[order]
+        self._spans: dict[int, list[tuple[int, int, int]]] = {}   # video code -> (start, end, row) of multi-frame rows
+        for i in np.nonzero(self._start != self._end)[0].tolist():
+            self._spans.setdefault(int(vcode[i]), []).append((int(self._start[i]), int(self._end[i]), i))
 
     # ---- loading ----
     def _load(self, release, with_masks):
@@ -132,7 +171,8 @@ class FrameSamples:
                                     f"(or pass release=None to read the live annotations)")
         path = root if release == "latest" else root / release
         if not path.exists():
-            raise FileNotFoundError(f"release '{release}' not found in {root}")
+            have = sorted(d.name for d in root.iterdir() if d.is_dir() and (d / "release.json").exists()) if root.exists() else []
+            raise FileNotFoundError(f"release '{release}' not found in {root}" + (f"; releases here: {', '.join(have)}" if have else ""))
         c = Compiled(path)
         return c.read(columns=cols), c.release_id, c.vocab
 
@@ -143,13 +183,15 @@ class FrameSamples:
             lo, hi = max(lo, self.view.frame_range[0]), min(hi, self.view.frame_range[1])
         if mode == "all":
             return list(range(lo, hi + 1))
-        wanted = set(self.kinds)
-        out: set[int] = set()
-        for (v, f), idx in self._points.items():
-            if v == vid and any(self._rows[i]["kind"] in wanted for i in idx):
-                out.add(f)
-        for a, b, i in self._spans.get(vid, []):
-            if self._rows[i]["kind"] in wanted:
+        code = self._vcode_of.get(vid)
+        if code is None:
+            return []
+        wanted = np.array([_KINDS.index(k) for k in self.kinds], np.int8)
+        a0, a1 = np.searchsorted(self._pkey, [code * _KEY, (code + 1) * _KEY])
+        rows = self._prow[a0:a1]
+        out: set[int] = set(self._start[rows[np.isin(self._kind[rows], wanted)]].tolist())
+        for a, b, i in self._spans.get(code, []):
+            if self._kind[i] in wanted:
                 out.update(range(max(a, lo), min(b, hi) + 1))
         return sorted(f for f in out if lo <= f <= hi)
 
@@ -231,9 +273,15 @@ class FrameSamples:
             for r in readers.values():
                 r.close()
 
-    def _active(self, video_id: str, frame: int) -> list[dict]:
-        rows = [self._rows[i] for i in self._points.get((video_id, frame), [])]
-        rows += [self._rows[i] for a, b, i in self._spans.get(video_id, []) if a <= frame <= b]
+    def _active(self, video_id: str, frame: int) -> list[int]:
+        """Row numbers active on this frame: single-frame rows first, then spans."""
+        code = self._vcode_of.get(video_id)
+        if code is None:
+            return []
+        k = code * _KEY + int(frame)
+        lo, hi = np.searchsorted(self._pkey, [k, k + 1])
+        rows = self._prow[lo:hi].tolist()
+        rows += [i for a, b, i in self._spans.get(code, ()) if a <= frame <= b]
         return rows
 
     def targets(self, video_id: str, frame: int, image_size: tuple[int, int]) -> dict:
@@ -241,21 +289,24 @@ class FrameSamples:
         w, h = image_size
         frame_labels = np.zeros(len(self.class_names), np.float32)
         boxes, labels, tracks, ids, mks = [], [], [], [], []
-        for r in self._active(video_id, frame):
-            if r["kind"] == "marker":
-                frame_labels[self._class_of[r["label"]] - self.label_offset] = 1.0
+        wanted = {_KINDS.index(k) for k in self.kinds}
+        for i in self._active(video_id, frame):
+            kind = int(self._kind[i])
+            if kind == _MARKER:
+                frame_labels[int(self._label[i]) - self.label_offset] = 1.0
                 continue
-            if r["kind"] not in self.kinds or None in (r["x0"], r["y0"], r["x1"], r["y1"]):
+            if kind not in wanted or np.isnan(self._box[i]).any():
                 continue
-            box = (r["x0"], r["y0"], r["x1"], r["y1"])
+            box = tuple(float(v) for v in self._box[i])
             boxes.append(self.view.to_view_box(box) if self.view else box)
-            labels.append(self._class_of[r["label"]])
-            tracks.append(-1 if r["track_id"] is None else r["track_id"])
-            ids.append(r["annotation_id"])
+            labels.append(int(self._label[i]))
+            tracks.append(int(self._track[i]))
+            ids.append(int(self._ann_id[i]))
             if self.with_masks:
                 m = np.zeros((h, w), np.uint8)
-                if r.get("mask") is not None:
-                    full = crop_mask_to_view(masklib.decode(r["mask"]), self.view)
+                blob = self._mask[i].as_py() if self._mask is not None else None
+                if blob is not None:
+                    full = crop_mask_to_view(masklib.decode(blob), self.view)
                     if full.shape[:2] == (h, w):
                         m = full.astype(np.uint8)
                 mks.append(m)

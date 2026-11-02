@@ -1,29 +1,69 @@
 from __future__ import annotations
 
+import functools
 import json
+import os
+import subprocess
 from pathlib import Path
 from typing import Optional
 
 import typer
+from pydantic import ValidationError as PydanticValidationError
 
 from .dataset import Dataset
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="vidlabel: video annotation datasets.")
 
 
-@app.command()
+def _message(e: BaseException) -> str:
+    if isinstance(e, PydanticValidationError):
+        parts = []
+        for err in e.errors():
+            where = ".".join(str(x) for x in err["loc"])
+            parts.append((f"{where}: " if where else "") + err["msg"].removeprefix("Value error, "))
+        return "; ".join(parts)
+    if isinstance(e, KeyError) and e.args:
+        return str(e.args[0])
+    return str(e) or type(e).__name__
+
+
+def _friendly(fn):
+    """Show the mistakes a user can make (no such file, unknown video, bad value) as one `[error] ...` line and exit 1,
+    instead of a Python traceback. Set VIDLABEL_DEBUG=1 to get the traceback."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except (typer.Exit, typer.Abort, typer.BadParameter):      # typer's own control flow: pass it through
+            raise
+        except (OSError, ValueError, KeyError, RuntimeError, PydanticValidationError, subprocess.SubprocessError) as e:
+            if os.environ.get("VIDLABEL_DEBUG"):
+                raise
+            typer.echo(f"[error] {_message(e)}")
+            raise typer.Exit(1)
+    return wrapper
+
+
+def _command(*args, **kwargs):
+    register = app.command(*args, **kwargs)
+    return lambda fn: register(_friendly(fn))
+
+
+@_command()
 def init(path: Path):
     """Create an empty dataset."""
     Dataset.create(path)
     typer.echo(f"created {path}")
 
 
-@app.command()
+@_command()
 def info(path: Path):
     """Show what is in a dataset."""
     s = Dataset.open(path).stats()
     typer.echo(f"videos: {s['videos']}   views: {s['views']}   annotations: {s['annotations']}   vocab: {s['labels_in_vocab']}")
     for key in ("by_kind", "by_origin", "by_status"):
+        if not s[key]:
+            continue
         typer.echo(f"{key[3:]:>8}: " + ", ".join(f"{k}={v}" for k, v in sorted(s[key].items())))
     if s["by_view"]:
         typer.echo("   views: " + ", ".join(f"{k}={v}" for k, v in sorted(s["by_view"].items())))
@@ -38,10 +78,11 @@ def info(path: Path):
         typer.echo("  labels: " + ", ".join(f"{k}={v}" for k, v in top))
 
 
-@app.command()
+@_command()
 def validate(path: Path, deep: bool = typer.Option(False, help="Also decode every mask and cross-check its box.")):
     """Check a dataset against the spec. Exit code 1 if there are errors."""
-    issues = Dataset.open(path).validate(deep=deep)
+    from .validate import validate_dataset
+    issues = validate_dataset(path, deep=deep)      # not Dataset.open: a missing or broken manifest is reported as an issue
     for i in issues:
         typer.echo(str(i))
     n_err = sum(i.level == "error" for i in issues)
@@ -49,15 +90,19 @@ def validate(path: Path, deep: bool = typer.Option(False, help="Also decode ever
     raise typer.Exit(1 if n_err else 0)
 
 
-@app.command()
+@_command()
 def build(path: Path, include_rejected: bool = typer.Option(False, help="Also put rejected annotations in the release.")):
     """Compile the sorted training table; prints the release id to pin."""
     statuses = ("unreviewed", "approved", "rejected") if include_rejected else ("unreviewed", "approved")
     rel, out = Dataset.open(path).build(statuses=statuses)
     typer.echo(f"{rel.release_id}  rows={rel.n_rows} videos={rel.n_videos}  {out}")
+    if include_rejected:
+        typer.echo("[note] this release includes rejected rows, so 'latest' was not moved to it; refer to it by its id.")
+    if rel.n_rows == 0:
+        typer.echo("[note] this release has no annotations. Add some (Dataset.add_annotations) before pinning it for training.")
 
 
-@app.command("add-video")
+@_command("add-video")
 def add_video(path: Path, video_file: Path,
               video_id: Optional[str] = typer.Option(None, help="Id to register it under. Default: the file name without extension."),
               no_hash: bool = typer.Option(False, "--no-hash", help="Skip hashing the file (faster, weaker identity)."),
@@ -72,12 +117,19 @@ def add_video(path: Path, video_file: Path,
         except ValueError as e:
             typer.echo(f"[note] no frame index: {e}")
             index = None
-    meta = Dataset.open(path).add_video(meta, frame_index=index)
+    ds = Dataset.open(path)
+    same = [v for v in ds.video_ids() if meta.content_hash and ds.video(v).content_hash == meta.content_hash and v != meta.video_id]
+    if same:
+        typer.echo(f"[note] this file is already registered as '{same[0]}'; adding it again under '{meta.video_id}' makes a second video")
+    try:
+        meta = ds.add_video(meta, frame_index=index)
+    except FileExistsError as e:
+        raise FileExistsError(f"{e}; give this one another name with --video-id") from None
     typer.echo(f"added {meta.video_id}: {meta.width}x{meta.height}, {meta.frame_count} frames"
                + (f", keyframe every {index.interval_stats()['median']} frames" if index else ""))
 
 
-@app.command("index")
+@_command("index")
 def index_cmd(path: Path, video_ids: list[str] = typer.Argument(None, help="Videos to index. Default: all that have no index yet."),
               video_path: Optional[Path] = typer.Option(None, help="Video file, if the recorded path is stale (one video only)."),
               root: list[Path] = typer.Option([], help="Folder(s) to search for the videos by file name."),
@@ -122,14 +174,17 @@ def _ints(text: str, n: int, what: str) -> list[int]:
     return vals
 
 
-@app.command("add-labels")
+@_command("add-labels")
 def add_labels(path: Path, labels: list[str]):
     """Add labels to the shared vocabulary."""
-    added = Dataset.open(path).add_labels(labels)
+    names = [n.strip() for item in labels for n in item.split(",") if n.strip()]      # 'a b' and 'a,b' both work
+    if not names:
+        raise typer.BadParameter("give at least one label name")
+    added = Dataset.open(path).add_labels(names)
     typer.echo(f"added {len(added)} label(s): {', '.join(added) or '(all already existed)'}")
 
 
-@app.command("add-view")
+@_command("add-view")
 def add_view(path: Path, view_id: str, video_id: str,
              region: Optional[str] = typer.Option(None, help="x,y,width,height in displayed pixels"),
              frames: Optional[str] = typer.Option(None, help="first,last frame (inclusive)"),
@@ -157,7 +212,7 @@ def _resolve_video(ds: Dataset, video_id: str, video_path: Optional[Path], roots
     return Path(p)
 
 
-@app.command()
+@_command()
 def preview(path: Path, video_id: str, out: Path = typer.Option(Path("preview_out"), help="Output folder."),
             frames: Optional[str] = typer.Option(None, help="e.g. '0-100,250'. Default: a spread of annotated frames."),
             every: int = typer.Option(1, help="With --frames, keep every Nth frame."),
@@ -175,8 +230,8 @@ def preview(path: Path, video_id: str, out: Path = typer.Option(Path("preview_ou
     from .preview import PreviewStyle, count_drawn, parse_colors, parse_frames, render_preview
     ds = Dataset.open(path)
     meta = ds.video(video_id)
-    chosen = parse_frames(frames, meta.frame_count)[::max(every, 1)] if frames else None
     try:
+        chosen = parse_frames(frames, meta.frame_count)[::max(every, 1)] if frames else None
         default_color, label_colors = parse_colors(color) if color else (None, {})
         style = PreviewStyle(color=default_color, label_colors=label_colors, thickness=thickness, font_scale=font_scale,
                              show_labels=labels, outline=outline)
@@ -202,6 +257,17 @@ def preview(path: Path, video_id: str, out: Path = typer.Option(Path("preview_ou
 _LONG_GOP = 30   # mean frames decoded per random access above which check-video suggests re-encoding
 
 
+def _same_times(a, b) -> bool:
+    """Whether two frame indexes put every frame at the same time (within half a frame), whatever their time bases."""
+    if a.frame_count != b.frame_count:
+        return False
+    import numpy as np
+    ta = np.asarray(a.pts, np.float64) * (a.timebase.num / a.timebase.den)
+    tb = np.asarray(b.pts, np.float64) * (b.timebase.num / b.timebase.den)
+    gaps = np.diff(ta)
+    return bool(np.all(np.abs(ta - tb) <= 0.5 * (gaps.min() if len(gaps) else 1.0)))
+
+
 def reencode_command(meta, name: str = "input.mp4") -> str:
     """The ffmpeg command that re-encodes a video with a keyframe every 30 frames, keeping frame timing and audio."""
     stem = name.rsplit(".", 1)[0]
@@ -209,7 +275,7 @@ def reencode_command(meta, name: str = "input.mp4") -> str:
     return f"ffmpeg -i {name} -c:v libx264 -crf 18 -g {_LONG_GOP} -keyint_min {_LONG_GOP}{timing} -c:a copy {stem}_gop{_LONG_GOP}.mp4"
 
 
-@app.command("check-video")
+@_command("check-video")
 def check_video_cmd(path: Path, video_id: str, video_path: Optional[Path] = typer.Option(None, help="Video file, if the recorded path is stale."),
                     root: list[Path] = typer.Option([], help="Folder(s) to search for the video by file name."),
                     hash: bool = typer.Option(False, help="Also verify the content hash (reads the whole file)."),
@@ -226,19 +292,30 @@ def check_video_cmd(path: Path, video_id: str, video_path: Optional[Path] = type
     except (ImportError, FileNotFoundError, ValueError) as e:
         typer.echo(f"[error] {e}")
         raise typer.Exit(1)
+    stored = ds.frame_index(video_id)
+    try:
+        index = probe_frame_index(file, content_hash=meta.content_hash)      # the file we were given, not the stored copy
+    except (ValueError, RuntimeError) as e:
+        index = None
+        typer.echo(f"[note] could not read the file's keyframes and timestamps: {e}")
+    if index is not None and stored is not None:
+        if not _same_times(stored, index):
+            problems.append("frame timestamps differ from the stored frame index: this file is a different encoding, or was re-timed")
     for p in problems:
         typer.echo(f"[error] {p}")
-    typer.echo("ok: file matches the metadata" if not problems else f"{len(problems)} problem(s)")
     if problems:
+        typer.echo(f"{len(problems)} problem(s)")
         raise typer.Exit(1)
-    index = ds.frame_index(video_id)
-    if index is None:
-        try:
-            index = probe_frame_index(file, content_hash=meta.content_hash)
-            typer.echo(f"[note] {video_id} has no stored frame index; run `vidlabel index {path}` to add one "
-                       f"(needed to seek in variable-frame-rate video and to plan reads)")
-        except (ValueError, RuntimeError) as e:
-            typer.echo(f"[note] could not read keyframes: {e}")
+    typer.echo("ok: file matches the metadata (frame count, size" + (", content hash)" if hash else ")"))
+    if not hash and meta.content_hash:
+        typer.echo("[note] the content hash was not checked. A file with the same frames, size and timing but different pixels (a re-encode, "
+                   "a flipped copy) passes; add --hash to confirm it is the identical file.")
+    if stored is None and index is not None:
+        typer.echo(f"[note] {video_id} has no stored frame index; run `vidlabel index {path}` to add one "
+                   f"(needed to seek in variable-frame-rate video and to plan reads)")
+    elif stored is not None and index is not None and stored.keyframes != index.keyframes:
+        typer.echo("[note] this file's keyframes differ from the stored index: it was re-encoded. Labels still line up if the "
+                   "frames are the same, but the stored index describes the original; register this file as a new video to use it.")
     if index is not None:
         st = index.interval_stats()
         typer.echo(f"keyframes: every {st['median']} frames (shortest {st['min']}, longest {st['max']}); a random frame "
@@ -247,7 +324,7 @@ def check_video_cmd(path: Path, video_id: str, video_path: Optional[Path] = type
             typer.echo(f"[note] keyframes are far apart, so random access is slow (VideoStream, which reads in order, is "
                        f"unaffected). To make it faster, re-encode with a keyframe every {_LONG_GOP} frames:\n"
                        f"    {reencode_command(meta, file.name)}\n"
-                       f"  Re-encoding changes the pixels slightly and makes a different file: register the result as a new "
+                       f"  Re-encoding changes the pixels slightly and makes a different (usually larger) file: register the result as a new "
                        f"video. Or build a frame cache for the frames you train on: `vidlabel cache`.")
     if seek:
         n = meta.frame_count
@@ -268,7 +345,7 @@ def check_video_cmd(path: Path, video_id: str, video_path: Optional[Path] = type
     raise typer.Exit(0)
 
 
-@app.command("cache")
+@_command("cache")
 def cache_cmd(path: Path, out: Path,
               release: str = typer.Option("latest", help="Release to take the frames from: 'latest', a release id, or 'none' for the live annotations."),
               view: Optional[str] = typer.Option(None, help="Only the frames this view samples."),
@@ -294,7 +371,7 @@ def cache_cmd(path: Path, out: Path,
         typer.echo("[note] jpg is lossy: pixels differ slightly from the video. Use --format png for exact pixels.")
 
 
-@app.command()
+@_command()
 def schema(out: Optional[Path] = typer.Option(None, help="Write the JSON Schema to this file instead of printing it.")):
     """Print (or write) the JSON Schema of the spec."""
     from vidlabel_spec import json_schema, write_json_schema

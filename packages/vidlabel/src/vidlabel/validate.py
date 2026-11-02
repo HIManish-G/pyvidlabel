@@ -24,6 +24,7 @@ class Issue:
     message: str
     count: int = 1
     sample_ids: list[int] = field(default_factory=list)
+    where: list[str] = field(default_factory=list)      # the frame (and track) of the first few offending rows
 
     def __str__(self) -> str:
         s = f"[{self.level}] {self.code}: {self.message}"
@@ -31,6 +32,8 @@ class Issue:
             s += f" ({self.count} rows)"
         if self.sample_ids:
             s += f" e.g. annotation_id {self.sample_ids[:3]}"
+        if self.where:
+            s += f" at {', '.join(self.where[:3])}"
         return s
 
 
@@ -97,6 +100,17 @@ def _check_tracks(table: pa.Table, report, *, geom: np.ndarray, is_mask: np.ndar
     report("error", "duplicate_track_in_frame", "the same track_id appears more than once in one frame (same kind, same view)", bad)
 
 
+def _where(table: pa.Table, bad: np.ndarray, limit: int = 3) -> list[str]:
+    """'frame 12 (track 3)' for the first rows flagged in `bad`, so an error points at something a person can find."""
+    try:
+        pos = pa.array(np.nonzero(bad)[0][:limit])
+        frames = table.column("start_frame").take(pos).to_pylist()
+        tracks = table.column("track_id").take(pos).to_pylist() if "track_id" in table.column_names else [None] * len(frames)
+    except Exception:
+        return []
+    return [f"frame {f}" + (f" (track {t})" if t is not None else "") for f, t in zip(frames, tracks)]
+
+
 def check_tracks(table: pa.Table) -> list[Issue]:
     """Only the track rules, for a table that already has the standard columns (used when appending to existing rows)."""
     issues: list[Issue] = []
@@ -107,7 +121,7 @@ def check_tracks(table: pa.Table) -> list[Issue]:
     def report(level, code, msg, bad):
         n = int(bad.sum())
         if n:
-            issues.append(Issue(level, code, msg, n, [int(x) for x in ids[bad][:5]]))
+            issues.append(Issue(level, code, msg, n, [int(x) for x in ids[bad][:5]], _where(table, bad)))
 
     kind = np.asarray(table.column("kind").to_pylist(), dtype=object)
     _check_tracks(table, report, geom=(kind == "box") | (kind == "mask"), is_mask=kind == "mask",
@@ -139,7 +153,7 @@ def check_annotation_table(
     def report(level, code, msg, bad):
         n = int(bad.sum())
         if n:
-            issues.append(Issue(level, code, msg, n, [int(x) for x in ids[bad][:5]]))
+            issues.append(Issue(level, code, msg, n, [int(x) for x in ids[bad][:5]], _where(table, bad)))
 
     for name in REQUIRED_COLUMNS:
         report("error", "null_required", f"required column '{name}' has nulls", _nulls(table, name))
