@@ -185,7 +185,9 @@ def test_a_failed_commit_puts_everything_back_and_keeps_the_draft(ds, monkeypatc
 
 def test_problems_are_found_before_anything_is_written(ds):
     d = D.Draft.load(ds, "ana")
-    d.add("v", {"kind": "box", "label": "thing", "start_frame": 0, "box": (1, 1, 5, 5), "track_id": 1})    # track 1 already has frame 0
+    # the draft itself refuses a second box for track 1 on frame 0, so put one in the journal directly: the commit must still catch it
+    d._record({"op": "add", "video_id": "v", "tmp": "p1", "label": "forced", "row": {"kind": "box", "label": "thing", "start_frame": 0, "end_frame": 0,
+               "x0": 1, "y0": 1, "x1": 5, "y1": 5, "track_id": 1, "origin": "human", "author": "ana"}})
     before = _hash(ds)
     with pytest.raises(ValidationError, match="duplicate_track_in_frame|track"):
         d.commit("clash")
@@ -277,3 +279,31 @@ def test_big_ids_are_kept_exactly(ds):
     assert rec["videos"]["v"]["deleted_ids"] == [big]
     D.revert(ds, 1)
     assert big in ds.annotations("v").column("annotation_id").to_pylist()
+
+
+def test_a_track_cannot_get_two_boxes_on_one_frame_in_the_draft(ds):
+    d = D.Draft.load(ds, "ana")
+    with pytest.raises(D.DraftError, match="already has a box on frame 4"):           # a committed box is there
+        d.add("v", {"kind": "box", "label": "thing", "start_frame": 4, "box": (1, 1, 9, 9), "track_id": 1})
+    d.add("v", {"kind": "box", "label": "thing", "start_frame": 5, "box": (1, 1, 9, 9), "track_id": 1})
+    with pytest.raises(D.DraftError, match="already has a box on frame 5"):           # and so is a pending one
+        d.add("v", {"kind": "box", "label": "thing", "start_frame": 5, "box": (2, 2, 9, 9), "track_id": 1})
+    d.add("v", {"kind": "box", "label": "thing", "start_frame": 5, "box": (2, 2, 9, 9), "track_id": 7})     # another track is fine
+    d.add("v", {"kind": "box", "label": "thing", "start_frame": 5, "box": (2, 2, 9, 9)})                    # so is no track at all
+    d.add("v", {"kind": "mask", "label": "thing", "start_frame": 4, "mask": np.ones((48, 64), bool), "track_id": 1})   # a mask is another kind
+    assert d.summary()["added"] == 4
+
+
+def test_deleting_a_box_frees_its_place_and_track_changes_are_checked(ds):
+    d = D.Draft.load(ds, "ana")
+    rid = [r for r in ds.annotations("v", track_id=1).to_pylist() if r["start_frame"] == 4][0]["annotation_id"]
+    d.delete("v", [rid])
+    d.add("v", {"kind": "box", "label": "thing", "start_frame": 4, "box": (1, 1, 9, 9), "track_id": 1})      # the place is free again
+    d2 = D.Draft.load(ds, "bob")
+    other = ds.annotations("v", track_id=2).to_pylist()[0]["annotation_id"]
+    with pytest.raises(D.DraftError, match="track 1 would have two boxes on frame 0"):                      # merging track 2 into track 1 collides
+        d2.update("v", ds.annotations("v", track_id=2).column("annotation_id").to_pylist(), track_id=1)
+    with pytest.raises(D.DraftError, match="two boxes"):
+        d2.update("v", [other], track_id=1)
+    d2.update("v", [other], track_id=5)                                                                      # a free number is fine
+    assert d2.summary()["modified"] == 1

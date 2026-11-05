@@ -461,3 +461,62 @@ def test_dragging_the_end_of_a_span_resizes_it(page):
     pg.mouse.up()
     pg.wait_for_function("V.tl.markers.some(m => m.start_frame === 10 && m.end_frame >= 24 && m.end_frame <= 26 && m.pending)")
     assert not pg.errors
+
+
+def test_jump_between_annotation_edges_and_copy_a_box_forward(page):
+    pg, ds, base = page
+    _viewer(pg, base, 45)                                     # tracks 1-3 run over frames 5 to 39
+    pg.keyboard.press(",")
+    _settled(pg, 39)
+    pg.keyboard.press(",")
+    pg.wait_for_function("V.n < 39")                          # the next earlier edge (a span or mask edge may sit between)
+    _viewer(pg, base, 6)
+    pg.wait_for_selector(".annrow")
+    pg.evaluate("V.sel = V.rows.find(r => r.kind === 'box' && r.track_id === 1).annotation_id")
+    before = ds.annotations("clip", frames=(7, 7), kind="box").num_rows
+    pg.keyboard.press("c")                                    # frame 7 already has track 1: refused, nothing changes
+    pg.wait_for_selector(".toast.bad:has-text('already has a box')")
+    _viewer(pg, base, 39)
+    pg.wait_for_selector(".annrow")
+    pg.evaluate("V.sel = V.rows.find(r => r.kind === 'box' && r.track_id === 1).annotation_id")
+    pg.keyboard.press("c")                                    # frame 40 is empty: the copy lands there and the viewer follows
+    _settled(pg, 40)
+    pg.wait_for_function("V.rows.some(r => r.pending === 'added' && r.track_id === 1 && r.start_frame === 40)")
+    assert ds.annotations("clip", frames=(40, 40), kind="box").num_rows == 0            # still only a draft
+    assert ds.annotations("clip", frames=(7, 7), kind="box").num_rows == before
+    pg.evaluate("fetch('/api/draft/discard', {method: 'POST', headers: {'X-Requested-With': 'vidlabel', 'X-Vidlabel-Author': 'ana', 'Content-Type': 'application/json'}, body: '{}'})")
+    assert not pg.errors
+
+
+def test_pressing_c_quickly_never_makes_two_boxes_for_one_track_on_a_frame(page):
+    pg, ds, base = page
+    _viewer(pg, base, 39)
+    pg.wait_for_selector(".annrow")
+    pg.evaluate("V.sel = V.rows.find(r => r.kind === 'box' && r.track_id === 1).annotation_id")
+    for _ in range(6):                                        # six quick presses, faster than the server answers
+        pg.keyboard.press("c")
+    pg.wait_for_timeout(1500)
+    rows = pg.evaluate("fetch('/api/draft', {headers: {'X-Vidlabel-Author': 'ana'}}).then(r => r.json())")
+    adds = [o for o in rows["ops"] if o["kind"] == "add" and not o["undone"]]
+    labels = [o["label"] for o in adds]
+    assert len(labels) == len(set(labels)), labels            # no frame got two copies
+    _commit(pg, "copy forward")                               # and the commit is accepted
+    t = ds.annotations("clip", kind="box", track_id=1).to_pylist()
+    frames = [r["start_frame"] for r in t if r["view_id"] is None]
+    assert len(frames) == len(set(frames))
+    assert not pg.errors
+
+
+def test_the_box_tool_refuses_a_second_box_for_a_track_on_the_same_frame(page):
+    pg, ds, base = page
+    _viewer(pg, base, 20)                                     # tracks 1 to 3 already have boxes here
+    pg.evaluate("V.track = '2'")
+    at = _ov(pg)
+    pg.keyboard.press("b")
+    pg.mouse.move(*at(0.10, 0.60))
+    pg.mouse.down()
+    pg.mouse.move(*at(0.20, 0.70), steps=3)
+    pg.mouse.move(*at(0.30, 0.90), steps=3)
+    pg.mouse.up()
+    pg.wait_for_selector(".toast.bad:has-text('already has a box')")
+    assert _draft_count(pg) == 0

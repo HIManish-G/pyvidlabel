@@ -81,15 +81,18 @@ function rowsAt(v, n) {
   return Array.isArray(c) ? c.filter(r => r.start_frame <= n && n <= r.end_frame) : null;
 }
 function loadChunk(v, ci) {
-  if (ci < 0 || ci * CHUNK >= v.frames || v.ann.chunks.has(ci)) return Promise.resolve();
+  if (ci < 0 || ci * CHUNK >= v.frames) return Promise.resolve();
+  if (v.ann.chunks.has(ci)) return v.ann.waiting.get(ci) || Promise.resolve();      // already loaded, or loading: wait for that same request
   const gen = v.ann.gen;
   v.ann.chunks.set(ci, "loading");
   const a = ci * CHUNK, b = Math.min(v.frames - 1, a + CHUNK - 1);
-  return GET(`/api/annotations-range/${encodeURIComponent(v.vid)}`, { start: a, end: b, view_id: v.view }).then(d => {
+  const p = GET(`/api/annotations-range/${encodeURIComponent(v.vid)}`, { start: a, end: b, view_id: v.view }).then(d => {
     if (V !== v || v.ann.gen !== gen) return;
     // a row covering several chunks is returned by each; filtering by frame in rowsAt() keeps one copy per frame
     v.ann.chunks.set(ci, d.rows); requestPaint("stage");
-  }).catch(e => { if (V === v && v.ann.gen === gen) { v.ann.chunks.delete(ci); toast(e.message, true); } });
+  }).catch(e => { if (V === v && v.ann.gen === gen) { v.ann.chunks.delete(ci); toast(e.message, true); } }).finally(() => { if (v.ann.waiting.get(ci) === p) v.ann.waiting.delete(ci); });
+  v.ann.waiting.set(ci, p);
+  return p;
 }
 function ensureAnn(n) {
   const v = V, ci = chunkOf(n), p = loadChunk(v, ci), at = n % CHUNK;
@@ -98,7 +101,7 @@ function ensureAnn(n) {
 }
 /* after any edit: forget what was fetched and fetch the current stretch again */
 async function refreshAnn() {
-  const v = V; v.ann.gen++; v.ann.chunks.clear(); v.sideKey = null;
+  const v = V; v.ann.gen++; v.ann.chunks.clear(); v.ann.waiting.clear(); v.sideKey = null;
   await ensureAnn(v.n);
   if (V === v) requestPaint("stage");
 }
@@ -292,7 +295,7 @@ async function pageViewer(main, parts, q, alive) {
   V = { vid, n: n0, shown: null, shownBmp: null, frames: m.frame_count, view: q.view || "", playing: false, rate: 1, loop: false, dir: 1, rows: [], sel: null,
         boxes_on: true, masks_on: true, maskAlpha: .45, size: [m.width, m.height], fps, found: meta.file_found, zoom: 1, pan: [0, 0], fit: null,
         fs: { map: new Map(), pending: new Map(), bad: new Set(), cid: Math.random().toString(36).slice(2), seq: 0 },
-        ann: { chunks: new Map(), gen: 0 }, masks: new Map(), tl: null };
+        ann: { chunks: new Map(), waiting: new Map(), gen: 0 }, masks: new Map(), tl: null };
   const canvas = h("canvas", { width: m.width, height: m.height }), ov = h("canvas", { class: "ov", width: m.width, height: m.height, "aria-label": "Frame: draw and edit annotations here" });
   const layers = h("div", { class: "layers" }, canvas, ov);
   const hudState = h("span", { class: "hud-state" }), hudPos = h("span"), hudZoom = h("span");
@@ -312,7 +315,7 @@ async function pageViewer(main, parts, q, alive) {
   drawInit(); tlInit(V);
   const rate = h("select", { "aria-label": "Playback speed", onchange: e => { V.rate = +e.target.value; V.clock = null; } },
     [.25, .5, 1, 2].map(r => h("option", { value: r, selected: r === 1 }, r + "×")));
-  const viewSel = h("select", { onchange: e => { V.view = e.target.value; V.masks.clear(); V.ann.gen++; V.ann.chunks.clear(); for (const b of V.fs.map.values()) b.close(); V.fs.map.clear(); V.fs.bad.clear(); V.shownBmp = null; V.shown = null;
+  const viewSel = h("select", { onchange: e => { V.view = e.target.value; V.masks.clear(); V.ann.gen++; V.ann.chunks.clear(); V.ann.waiting.clear(); for (const b of V.fs.map.values()) b.close(); V.fs.map.clear(); V.fs.bad.clear(); V.shownBmp = null; V.shown = null;
       if (V.view) { V.work = null; V.tool = "select"; } paintToolbar(); loadTimeline(); goto(V.n, { force: true }); } },
     h("option", { value: "" }, "Whole frame"), views.map(v => h("option", { value: v.view_id, selected: v.view_id === V.view }, "View: " + v.view_id)));
   const tools = toolbarEl();
@@ -356,10 +359,46 @@ function viewerKey(ev) {
   else if (mod) return;
   else if (k === "ArrowRight") goto(v.n + step); else if (k === "ArrowLeft") goto(v.n - step);
   else if (k === " ") togglePlay(); else if (k === "Home") goto(0); else if (k === "End") goto(v.frames - 1);
+  else if (k === "." || k === ",") jumpEdge(k === "." ? 1 : -1);
+  else if (k.toLowerCase() === "c") { if (!ev.repeat) copyBoxForward(); }
   else if (k === "0") { v.zoom = 1; applyZoom(); }
   else if (k === "=" || k === "+") zoomStage(1.4); else if (k === "-") zoomStage(1 / 1.4);
   else return;
   ev.preventDefault();
+}
+
+/* ---------- shortcuts ---------- */
+/* the frames where something starts or ends (spans and tracks), so . and , move between them */
+function jumpEdge(dir) {
+  const v = V; if (!v.tl) return;
+  const edges = new Set();
+  for (const m of v.tl.markers) { if (m.pending !== "deleted") { edges.add(m.start_frame); edges.add(m.end_frame); } }
+  for (const t of v.tl.tracks) { edges.add(t.first_frame); edges.add(t.last_frame); }
+  const pick = [...edges].filter(f => dir > 0 ? f > v.n : f < v.n).sort((a, b) => a - b);
+  const f = dir > 0 ? pick[0] : pick[pick.length - 1];
+  if (f == null) { toast(dir > 0 ? "No later annotation starts or ends." : "No earlier annotation starts or ends.", false); return; }
+  goto(f);
+}
+/* C: copy the selected box to the next frame, keeping its label and track, and move there; press again to follow an object along */
+async function copyBoxForward() {
+  const v = V;
+  if (v.copying) return;                                      // one copy at a time: the next one needs this one's result
+  v.copying = true;
+  try { await copyBoxOnce(); } finally { v.copying = false; }
+}
+async function copyBoxOnce() {
+  const v = V, r = v.rows.find(x => x.annotation_id === v.sel);
+  if (!canDraw() || v.shown !== v.n || !editableBox(r)) { toast("Select a box on this frame (whole frame view), then press C to copy it forward.", true); return; }
+  if (v.n >= v.frames - 1) { toast("This is the last frame.", true); return; }
+  await ensureAnn(v.n + 1);
+  const there = rowsAt(v, v.n + 1);
+  if (!there) { toast("The next frame's annotations have not loaded yet. Try again.", true); return; }
+  if (r.track_id != null && there.some(x => x.kind === "box" && x.track_id === r.track_id && x.pending !== "deleted")) { toast(`Track ${r.track_id} already has a box on frame ${v.n + 1}. Step forward and adjust it instead.`, true); return; }
+  const row = { kind: "box", label: r.label, start_frame: v.n + 1, box: [r.x0, r.y0, r.x1, r.y1] };
+  if (r.track_id != null) row.track_id = r.track_id;
+  const res = await draftOp("/api/draft/add", { video_id: v.vid, row });
+  if (!res || V !== v) return;
+  v.sel = res.id; goto(v.n + 1); await afterEdit();
 }
 
 /* ---------- side panel ---------- */
@@ -381,5 +420,5 @@ function drawSide() {
   }
   const sp = selectionPanel(); if (sp) side.append(sp);
   side.append(h("p", { class: "muted", style: "margin-top:12px" }, h("span", { class: "kbd" }, "←"), " ", h("span", { class: "kbd" }, "→"), " step · ",
-    h("span", { class: "kbd" }, "Shift"), " 10 frames · ", h("span", { class: "kbd" }, "Space"), " play · scroll to zoom, middle-drag to pan · ", h("span", { class: "kbd" }, "Ctrl+Z"), " undo · ", h("span", { class: "kbd" }, "V B S M E P"), " tools"));
+    h("span", { class: "kbd" }, "Shift"), " 10 frames · ", h("span", { class: "kbd" }, "Space"), " play · scroll to zoom, middle-drag to pan · ", h("span", { class: "kbd" }, ", ."), " previous/next annotation edge · ", h("span", { class: "kbd" }, "C"), " copy box forward · ", h("span", { class: "kbd" }, "Ctrl+Z"), " undo · ", h("span", { class: "kbd" }, "V B S M E P"), " tools"));
 }

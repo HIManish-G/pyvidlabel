@@ -91,8 +91,12 @@ Masks: **Alt**-drag erases with the brush, **Shift**-click draws a straight line
 the opacity, and Undo and Redo step through strokes. A mask in progress belongs to the frame it was started on; if you move away the panel
 offers to go back, and it can only be saved onto that frame. Polygon corners can be dragged before the shape is closed.
 
-Keys: ← → step a frame, Shift 10 frames, Space plays, Home and End, Delete removes the selected row, Esc cancels a polygon or drag, Ctrl+Z and
+Keys: `,` and `.` jump to the previous or next frame where a span or track starts or ends; **C** copies the selected box to the next frame (same label and track) and moves there, so pressing it again follows an object along; it refuses if that track already has a box on the next frame (pressing it several times quickly makes one copy per frame). ← → step a frame, Shift 10 frames, Space plays, Home and End, Delete removes the selected row, Esc cancels a polygon or drag, Ctrl+Z and
 Ctrl+Y undo and redo your draft (or your mask strokes while a mask is open).
+
+A track can have only one box (and one mask) on a frame. The draft refuses a new box, or a change of track number, that would break this, with a
+message naming the track and frame, so a draft you can see is always one that can be committed. If an older draft already holds such a pair, the
+commit stops with `duplicate_track_in_frame`; remove one of the two entries from the Changes list (the **×** beside it) and commit again.
 
 ## Playing and moving around
 

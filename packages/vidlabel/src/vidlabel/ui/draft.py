@@ -274,6 +274,13 @@ class Draft:
             raise DraftError(str(e)) from None
         if bad:
             raise DraftError("; ".join(i.message for i in bad))
+        if r["kind"] != "marker" and r.get("track_id") is not None:
+            f = r["start_frame"]
+            for o in self.rows(video_id, include_deleted=False, frames=(f, f)):
+                if (o["kind"] != "marker" and o.get("track_id") == r["track_id"] and o["start_frame"] == f and (o["kind"] == "mask") == (r["kind"] == "mask")
+                        and o.get("view_id") == r.get("view_id")):
+                    raise DraftError(f"track {r['track_id']} already has a {o['kind']} on frame {f}. A track can have only one per frame: "
+                                     f"choose another track, or edit the one that is there.")
         row_json = {k: v for k, v in r.items() if k != "box"}
         stored = tbl.to_pylist()[0]
         for k in ("x0", "y0", "x1", "y1"):
@@ -299,11 +306,31 @@ class Draft:
         if "label" in vals and vals["label"] not in {l.name for l in self.ds.vocab.labels}:
             raise DraftError(f"label '{vals['label']}' is not in the vocabulary")
         ids = self._check_ids(video_id, ids)
+        if "track_id" in vals:
+            self._check_track_move(video_id, {i: vals["track_id"] for i in ids})
         what = ", ".join(f"{k} → {v}" for k, v in vals.items() if k not in ("x0", "y0", "x1", "y1", "mask_codec", "mask_b64")) or "geometry"
         if "mask_b64" in vals:
             what = "mask shape" + (", " + what if what != "geometry" else "")
         return self._record({"op": "update", "video_id": video_id, "ids": ids, "values": vals,
                              "label": f"change {what} ({len(ids)} row{'s' if len(ids) != 1 else ''})"})
+
+    def _check_track_move(self, video_id: str, moved: dict) -> None:
+        """Refuse a change of track number that would leave one track with two boxes (or two masks) on a frame. The commit would refuse
+        it too (`duplicate_track_in_frame`); saying so here keeps the draft always committable."""
+        if all(t is None for t in moved.values()):
+            return
+        rows = [r for r in self.rows(video_id, include_deleted=False) if r["kind"] != "marker"]
+        key = lambda r, t: (r.get("view_id"), t, r["start_frame"], r["kind"] == "mask")
+        count: dict = {}
+        for r in rows:
+            t = moved.get(r["annotation_id"], r.get("track_id"))
+            if t is not None:
+                count[key(r, t)] = count.get(key(r, t), 0) + 1
+        for r in rows:
+            if r["annotation_id"] in moved and moved[r["annotation_id"]] is not None:
+                k = key(r, moved[r["annotation_id"]])
+                if count[k] > 1:
+                    raise DraftError(f"track {k[1]} would have two {'masks' if k[3] else 'boxes'} on frame {k[2]}. A track can have only one per frame.")
 
     def delete(self, video_id: str, ids: Iterable[Any]) -> dict:
         ids = self._check_ids(video_id, ids)
