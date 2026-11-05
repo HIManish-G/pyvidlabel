@@ -734,7 +734,10 @@ def schema(state: UIState, ctx: Ctx):
 # ------------------------------------------------------------------ a folder picker (this computer's disk)
 def _fs_check(state: UIState, p: Path) -> Path:
     """Paths the page may name must be inside the allowed folders; on a network-visible server there must be some."""
-    p = Path(os.path.expanduser(str(p))).resolve()
+    text = str(p).strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":     # a path pasted with quotes ("Copy as path" on Windows)
+        text = text[1:-1].strip()
+    p = Path(os.path.expanduser(text)).resolve()
     if state.fs_roots is None:
         if not state.local_only:
             raise PermissionError("this server is shared on the network, so file access is off. Start it with --fs-root FOLDER to allow one")
@@ -760,8 +763,10 @@ def list_folder(state: UIState, ctx: Ctx):
             return {"path": "", "parent": None, "entries": [{"name": d, "path": d, "dir": True} for d in drives]}
         raw = str(Path.home())
     p = _fs_check(state, Path(raw))
+    if p.is_file():                                  # a file was given: show the folder it is in
+        p = p.parent
     if not p.is_dir():
-        raise FileNotFoundError(f"{p} is not a folder")
+        raise FileNotFoundError(f"there is no folder at {p}")
     entries = []
     for c in sorted(p.iterdir(), key=lambda c: (not c.is_dir(), c.name.lower())):
         if c.name.startswith("."):

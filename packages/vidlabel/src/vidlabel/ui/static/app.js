@@ -4,6 +4,11 @@
 
 const S = { author: "", session: null, info: null, draft: null, jobs: [], page: null };
 const $ = (sel, root = document) => root.querySelector(sel);
+/* replaceChildren that accepts nested arrays, null and plain text, like h() does (the built-in turns an array into "[object HTMLDivElement],..." text) */
+const _replaceChildren = Element.prototype.replaceChildren;
+Element.prototype.replaceChildren = function (...kids) {
+  return _replaceChildren.apply(this, kids.flat(Infinity).filter(k => k != null && k !== false).map(k => (k instanceof Node ? k : document.createTextNode(String(k)))));
+};
 
 /* ---------- small helpers ---------- */
 function h(tag, attrs, ...kids) {
@@ -274,7 +279,7 @@ function videoTable(rows) {
   if (!rows.length) return h("div", { class: "empty" }, "No videos yet. Add one with ", h("span", { class: "mono" }, "vidlabel add-video"), ".");
   return h("table", {}, h("thead", {}, h("tr", {}, ["Video", "Size", "fps", "Frames", "Codec", "Annotations", ""].map((t, k) => h("th", { class: k > 0 && k < 6 ? "num" : "" }, t)))),
     h("tbody", {}, rows.map(v => h("tr", {}, h("td", {}, h("a", { href: "#/video/" + encodeURIComponent(v.video_id) }, v.video_id)),
-      h("td", { class: "num" }, `${v.width}×${v.height}`), h("td", { class: "num" }, v.fps), h("td", { class: "num" }, fmt(v.frame_count)), h("td", { class: "num" }, v.codec || "–"),
+      h("td", { class: "num" }, `${v.width}×${v.height}`), h("td", { class: "num" }, +Number(v.fps).toFixed(3)), h("td", { class: "num" }, fmt(v.frame_count)), h("td", { class: "num" }, v.codec || "–"),
       h("td", { class: "num" }, fmt(v.annotations)), h("td", { class: "right" }, h("a", { href: "#/review/" + encodeURIComponent(v.video_id) }, "Review"))))));
 }
 /* ---------- the score: every video as a band, coloured by review status ---------- */
@@ -353,13 +358,13 @@ async function pageBrowse(main) {
   main.replaceChildren(h("div", { class: "page" }, h("h1", {}, "Videos"), S.flash || [],
     h("p", { class: "muted" }, "The dataset stores facts about each video, never the pixels. Frames are read from the file on this computer."),
     h("div", { class: "card" }, h("h2", {}, "Add a video"),
-      h("div", { class: "row", style: "margin-bottom:8px" }, path, S.session.can_browse_files ? h("button", { onclick: () => pickFolder(path.value.replace(/[^\\/]*$/, ""), p => { path.value = p; if (!vid.value) vid.value = ""; }, true) }, "Browse") : null),
+      h("div", { class: "row", style: "margin-bottom:8px" }, path, S.session.can_browse_files ? h("button", { onclick: () => pickFolder(path.value.trim().replace(/^["']|["']$/g, ""), p => { path.value = p; if (!vid.value) vid.value = ""; }, true) }, "Browse") : null),
       vid, h("div", { class: "row", style: "margin:8px 0" }, h("label", { class: "row tight" }, hash, "Fingerprint the file"), h("label", { class: "row tight" }, index, "Read keyframes and timestamps")),
       h("button", { class: "primary", onclick: e => add(e.target) }, "Add video"), pbox),
     h("div", { class: "card" }, h("h2", {}, `${videos.length} video${videos.length === 1 ? "" : "s"}`),
       videos.length ? h("table", {}, h("thead", {}, h("tr", {}, ["Video", "Size", "fps", "Frames", "File", "Index", "Fingerprint", ""].map(t => h("th", {}, t)))),
         h("tbody", {}, videos.map(v => h("tr", {}, h("td", {}, h("a", { href: "#/video/" + encodeURIComponent(v.video_id) }, v.video_id)), h("td", {}, `${v.width}×${v.height}`),
-          h("td", {}, v.fps + (v.is_vfr ? " variable" : "")), h("td", {}, fmt(v.frame_count)), h("td", {}, v.file_found ? tag("found", "ok") : tag("not found", "warn")),
+          h("td", {}, +Number(v.fps).toFixed(3) + (v.is_vfr ? " variable" : "")), h("td", {}, fmt(v.frame_count)), h("td", {}, v.file_found ? tag("found", "ok") : tag("not found", "warn")),
           h("td", {}, v.has_index ? tag("yes", "ok") : tag("no", "warn")), h("td", {}, v.has_hash ? tag("yes", "ok") : tag("no", "warn")),
           h("td", { class: "right" }, h("div", { class: "row tight", style: "justify-content:flex-end" }, h("button", { class: "small", onclick: () => checkDialog(v) }, "Check"),
             h("button", { class: "small", onclick: async () => { const pb = progressBox(); const close = modal("Index " + v.video_id, pb, []); const r = await runJob("index", { video_ids: [v.video_id], force: true }, pb.update); close(); if (r) { const x = r.results[0]; toast(x.ok ? `Indexed ${v.video_id}: keyframe every ${x.keyframe_median} frames.` : x.error, !x.ok); render(); } } }, "Index"))))))) : h("div", { class: "empty" }, "No videos yet. Add one above.")),

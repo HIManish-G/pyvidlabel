@@ -193,3 +193,19 @@ def test_overview_score_has_a_band_per_video(page):
     pg.wait_for_selector(".score-row canvas")
     assert pg.locator(".score-row").count() >= 1
     assert not pg.errors
+
+
+def test_file_picker_lists_folders_and_videos_and_accepts_quoted_paths(page):
+    pg, ds, base = page
+    root = ds.path.parent
+    pg.goto(f"{base}/#/browse")
+    pg.reload()
+    pg.fill("input[placeholder='path to a video file']", f'"{root}"')       # pasted with quotes, as Windows "Copy as path" does
+    pg.click("button:has-text('Browse')")
+    pg.wait_for_selector(".picker div:has-text('clip.mp4')")
+    assert "[object" not in pg.inner_text(".modal")
+    assert pg.locator(".picker div:has-text('d')").count() >= 1             # the dataset folder is listed too
+    pg.click(".picker div:has-text('clip.mp4')")
+    pg.click(".modal button:has-text('Use this file')")
+    assert pg.input_value("input[placeholder='path to a video file']").endswith("clip.mp4")
+    assert not pg.errors

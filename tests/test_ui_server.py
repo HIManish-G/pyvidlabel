@@ -347,3 +347,16 @@ def test_timeline_has_status_bands_and_roots_find_moved_videos(env, tmp_path):
         assert post(c, "/api/roots", {"roots": [str(moved)]}).json()["roots"] == [str(moved.resolve())]
         assert c.get("/api/videos").json()["videos"][0]["file_found"] is True
         assert c.get("/api/frame/clip/1").status_code == 200
+
+
+def test_quoted_paths_and_file_paths_in_the_picker(env, tmp_path):
+    c, ds, st = env
+    folder = tmp_path / "pick"
+    folder.mkdir()
+    f = folder / "a.mp4"
+    f.write_bytes(b"x")
+    quoted = c.get("/api/fs", params={"path": f'"{folder}"'})            # Windows "Copy as path" adds quotes
+    assert quoted.status_code == 200 and [e["name"] for e in quoted.json()["entries"]] == ["a.mp4"]
+    given_file = c.get("/api/fs", params={"path": str(f)}).json()          # a file shows the folder it is in
+    assert given_file["path"] == str(folder.resolve())
+    assert c.get("/api/fs", params={"path": str(folder / "missing")}).status_code == 404
