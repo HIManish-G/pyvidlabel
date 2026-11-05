@@ -120,6 +120,11 @@ class Dataset:
         return list(self.manifest.videos)
 
     def _vdir(self, video_id: str) -> Path:
+        from vidlabel_spec._models import _check_id
+        try:
+            _check_id(str(video_id))
+        except ValueError:
+            raise KeyError(f"no video '{video_id}' in this dataset") from None
         return self.path / "videos" / video_id
 
     def add_video(self, meta: VideoMetadata | Mapping[str, Any], exist_ok: bool = False, *,
@@ -205,6 +210,11 @@ class Dataset:
 
     def view(self, view_id: str) -> View:
         """One view definition. Raises KeyError for an unknown id."""
+        from vidlabel_spec._models import _check_id
+        try:
+            _check_id(str(view_id))
+        except ValueError:
+            raise KeyError(f"no view '{view_id}' in this dataset") from None
         p = self.path / "views" / f"{view_id}.json"
         if not p.exists():
             raise KeyError(f"unknown view '{view_id}'")

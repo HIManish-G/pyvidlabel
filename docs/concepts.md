@@ -173,8 +173,8 @@ label's position, and the class index the training loader derives from it, does 
 `vidlabel build` merges every video's annotations into one table sorted by (`video_id`, `start_frame`,
 `annotation_id`), leaves out rejected rows by default, writes it to `compiled/<release_id>/annotations.parquet` and
 snapshots `vocab.json` next to it. The **release id is derived from the table's contents** (`r` plus the first 12 hex
-characters of its SHA-256), so the same data and filters always give the same id, and a changed annotation gives a new
-one. A training run that records its release id can be reproduced exactly.
+characters of its SHA-256), so building the same dataset folder again gives the same id, and a changed annotation gives a new
+one. (Annotation ids are random, so re-creating a dataset from a script gives a new id; share the folder, including `compiled/`. See [releases](releases.md#what-the-id-means).)
 
 You can build a subset (`origins`, `kinds`, `video_ids`, `view_ids`, `statuses`), and `Compiled.clip(video, start, end)`
 reads a frame range quickly by using the Parquet statistics to skip row groups that cannot match. `build` refuses to run

@@ -249,6 +249,12 @@ stream.set_epoch(epoch)                                   # a new chunk order ea
   several times more chunks than workers (`plan.summary()["chunks"]`), as a video with few keyframe intervals is few chunks.
 - **Order.** Inside a chunk frames come in increasing order, so without `shuffle_buffer` neighbouring samples are close in time.
   `shuffle_buffer` mixes them by holding that many decoded frames in memory (about 2.7 MB each at 720p); it trades memory for variety.
+  **Use a buffer of about 1,000 samples or more.** One small test (real 1,100-frame clip with 8 keyframe intervals, a tiny CNN regressing
+  box centres, 4,800 training samples, 5 seeds, validated on later frames): with no buffer, 99.7% of the neighbouring frames in a batch
+  were within 30 frames of each other and validation error was unstable (mean absolute error 0.048, from 0.012 to 0.079). A buffer of
+  256 gave 0.028; 1,024 gave 0.023 and 3,000 gave 0.023, the same as plain random access (0.022, 3 seeds), at about 25 times the
+  speed (7 s against 180 s for the whole run). Memory is the price: 1,024 frames of 384x384 are about 450 MB per process. One model,
+  one clip and a few seeds: check it on your own task.
 - **Videos without a frame index** are cut into blocks of 250 frames instead of real keyframe intervals (`block=` changes it), so
   the cost estimate for them is approximate. `vidlabel index` fixes that.
 - **Frames nobody annotated can be requested**: they come back with empty targets. Whether and how often to include them is your choice.
@@ -312,6 +318,6 @@ to read it cheaply. To narrow the fixed list instead, use `videos=`, `labels=`, 
 
 ## Running on Windows, macOS and Linux
 
-The loader is plain Python, NumPy and OpenCV and is tested in CI on all three, including DataLoader workers started with
+The loader is plain Python, NumPy and OpenCV and is written to work on all three and is tested on Linux (the Windows and macOS CI jobs have not been run yet), including DataLoader workers started with
 `fork` (the Linux default) and `spawn` (the default on Windows and macOS). With `num_workers > 0`, keep your training code
 under `if __name__ == "__main__":` on Windows and macOS: that is a PyTorch requirement, not a vidlabel one.

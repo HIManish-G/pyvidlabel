@@ -77,8 +77,8 @@ Header (little endian): `u8 version=1; u32 frame_h, frame_w, crop_y0, crop_x0, c
 
 ## Compiled releases
 `vidlabel build` merges per-video files into one table sorted by (`video_id`, `start_frame`, `annotation_id`),
-excluding `rejected` by default. `release_id = "r" + first 12 hex of the file's sha256`, so identical data and
-filters give the same id. Pin it in training configs. `Compiled.clip()` prunes row groups by statistics.
+excluding `rejected` by default. `release_id = "r" + first 12 hex of the file's sha256`, so building an unchanged dataset again gives the same id (the
+bytes include the random `annotation_id`s, so re-creating the data gives a new one). Pin it in training configs. `Compiled.clip()` prunes row groups by statistics.
 Each release folder also holds `vocab.json`, a snapshot of the label vocabulary at build time, so class indices derived from
 a pinned release stay fixed when labels are added later. Releases made before this was added fall back to the live vocabulary.
 

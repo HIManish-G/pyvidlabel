@@ -5,7 +5,7 @@ boxes, masks, tracks and labels, all in one annotation table. It is meant to be 
 labelling tools and your training code.
 
 > **Status:** version 0.6.0, pre-release. "vidlabel" is a working name. It is installed from a source checkout for now
-> (nothing is published to PyPI yet). The format and the library are tested on Linux, Windows and macOS; see
+> (nothing is published to PyPI yet). The test suite passes on Linux; Windows and macOS are not yet verified; see
 > [what is and is not verified](#what-is-and-is-not-verified).
 
 ## The idea in one minute
@@ -69,10 +69,18 @@ print(release.release_id, release.n_rows)
 | see the exact file format | [Specification](SPEC.md) |
 | know why it was built this way | [Design decisions](design-decisions.md) |
 | fix a problem | [Troubleshooting and FAQ](faq.md) |
+| install it, with all the options | [Installation](installation.md) |
+| follow a complete example | [Animal tracking](tutorial-animal-tracking.md), [Satellite tiles](tutorial-satellite-tiles.md) |
+| do one specific task | [How-to recipes](howto.md) |
+| fix a validation error | [Validation](validation.md) |
+| pin the data a training run used | [Releases](releases.md) |
+| see how the pieces fit, speed numbers, safety, and what is unverified | [Architecture](architecture.md), [Performance](performance.md), [Security](security.md), [Limitations](limitations.md), [Compatibility](compatibility.md) |
+| look up a term | [Glossary](glossary.md) |
+| change vidlabel | [Development](development.md), [Changelog](changelog.md) |
 
 ## What is and is not verified
 
-Tested in CI on Linux, Windows and macOS: the spec and validator, reading and writing, views, masks, releases, the
+Tested on Linux (and written to run in CI on Windows and macOS, which has not happened yet): the spec and validator, reading and writing, views, masks, releases, the
 command line, frame reading and previews on real encoded H.264 video, and the PyTorch loader including DataLoader
 workers started with both `fork` and `spawn`.
 

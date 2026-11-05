@@ -20,8 +20,8 @@ class _Strict(BaseModel):
 
 
 def _check_id(v: str) -> str:
-    if not _ID_RE.match(v):
-        raise ValueError("ids may only contain letters, digits, '.', '_' and '-'")
+    if not _ID_RE.fullmatch(v) or v in (".", ".."):
+        raise ValueError("ids may only contain letters, digits, '.', '_' and '-', and cannot be '.' or '..'")
     return v
 
 
@@ -267,6 +267,13 @@ class Manifest(_Strict):
     views: list[str] = Field(default_factory=list)
     vocab_version: str | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("videos", "views")
+    @classmethod
+    def _ids_are_safe(cls, v: list[str]) -> list[str]:
+        for item in v:
+            _check_id(item)
+        return v
 
 
 class Release(_Strict):

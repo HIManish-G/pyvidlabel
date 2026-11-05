@@ -50,7 +50,7 @@ Optional extras: `pip install -e "packages/vidlabel[video]"` (OpenCV: previews, 
 - **Check against the real video.** `vidlabel check-video` and `vidlabel preview` (OpenCV) draw annotations on actual frames.
 - **Training.** A framework-free sample builder and PyTorch datasets (streaming and map-style), including crops and box formats.
 - **Fast, exact frame access.** A per-video frame index makes seeking safe (even in variable-frame-rate video) and plans reads by keyframe; an optional frame cache turns random access into a file read.
-- **Runs on Linux, Windows and macOS** (tested in CI, with and without DataLoader workers).
+- **Built for Linux, Windows and macOS.** The test suite runs on Linux (with and without DataLoader workers); the CI workflow for Windows and macOS is written but has not been run yet.
 
 ## Documentation
 

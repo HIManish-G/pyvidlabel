@@ -4,7 +4,7 @@
 
 - `pip install -e packages/vidlabel-spec -e packages/vidlabel pytest`, then `pytest`.
 - Frame, preview, loader and seek tests need OpenCV and ffmpeg (`pip install -e "packages/vidlabel[video]"`); the loader tests
-  also need PyTorch (`[torch]`). Each skips itself if something is missing. CI runs everything on Linux, Windows and macOS.
+  also need PyTorch (`[torch]`). Each skips itself if something is missing. The CI workflow runs everything on Linux, Windows and macOS; only Linux has been exercised so far.
 
 ## The spec is the contract
 

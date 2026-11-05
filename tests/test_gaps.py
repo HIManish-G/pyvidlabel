@@ -238,3 +238,28 @@ def test_preview_labels_stay_inside_and_do_not_overprint():
     assert not (r2[0] < taken[0][2] and r2[2] > taken[0][0] and r2[1] < taken[0][3] and r2[3] > taken[0][1])
     out = draw_annotations(np.full((120, 200, 3), 90, np.uint8), [_row(x0=0, y0=0, x1=30, y1=30), _row(x0=0, y0=0, x1=30, y1=30, track_id=1)], 0)
     assert out.shape == (120, 200, 3)
+
+
+# ---- ids cannot point outside their folder ----
+@pytest.mark.parametrize("bad", [".", "..", "a/b", "a\\b", "a\n", ""])
+def test_ids_cannot_escape_the_dataset_folder(tmp_path, bad):
+    from vidlabel import Dataset, VideoMetadata
+    ds = Dataset.create(tmp_path / "d")
+    with pytest.raises(Exception):
+        ds.add_video(VideoMetadata(video_id=bad, frame_count=2, fps={"num": 1, "den": 1}, width=4, height=4))
+    assert sorted(p.name for p in (tmp_path / "d").iterdir()) == ["manifest.json", "videos", "views", "vocab.json"]
+    assert list((tmp_path / "d" / "videos").iterdir()) == []
+    for call in (lambda: ds.video(bad), lambda: ds.annotations(bad), lambda: ds.view(bad)):
+        with pytest.raises((KeyError, ValueError)):
+            call()
+
+
+def test_a_manifest_naming_a_path_is_reported_not_followed(tmp_path):
+    import json
+    from vidlabel import Dataset
+    ds = Dataset.create(tmp_path / "d")
+    m = json.loads((tmp_path / "d" / "manifest.json").read_text())
+    m["videos"] = ["../../etc"]
+    (tmp_path / "d" / "manifest.json").write_text(json.dumps(m))
+    issues = Dataset.open(tmp_path / "d").validate()
+    assert [i.code for i in issues] == ["bad_manifest"]

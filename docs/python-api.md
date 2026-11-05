@@ -296,8 +296,8 @@ Write compiled/<release_id>/{annotations.parquet, vocab.json, release.json}. Rej
 vocab.json is a snapshot of the label vocabulary, so class indices derived from a pinned release cannot change when
 labels are added to the dataset later.
 
-The release id is the hash of the file contents: same data and filters give the same id, so a training run can
-record it and later reproduce exactly the same table.
+The release id is the hash of the file's bytes: building an unchanged dataset again gives the same id, so a training run can
+record it and later read exactly the same table. (Annotation ids are random, so re-creating the data gives a new id; share the folder.)
 
 ### `vidlabel.build.Compiled`
 
