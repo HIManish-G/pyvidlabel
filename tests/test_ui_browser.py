@@ -74,6 +74,12 @@ def test_overview_shows_counts(page):
     assert not pg.errors
 
 
+def _settled(pg, frame):
+    """Wait until the picture on the canvas, the frame box and the timeline all show `frame`."""
+    pg.wait_for_function("f => V && V.painted && V.painted.n === f && V.painted.shown === f && V.painted.playhead === f "
+                         "&& +document.querySelector('.framein').value === f", arg=frame)
+
+
 def test_viewer_shows_frame_boxes_and_mask_and_steps(page):
     pg, ds, base = page
     pg.goto(f"{base}/#/video/clip?f=10")
@@ -84,9 +90,9 @@ def test_viewer_shows_frame_boxes_and_mask_and_steps(page):
         const d = x.getImageData(70, 40, 1, 1).data; return [c.width, c.height, d[0], d[1], d[2]]; }""")
     assert pixels[:2] == [96, 64] and pixels[2:] != [60, 60, 60]  # the mask tint changed the pixel at (70, 40)
     pg.keyboard.press("ArrowRight")
-    pg.wait_for_function("document.body.innerText.includes('frame 11 /')")
+    _settled(pg, 11)
     pg.keyboard.press("Shift+ArrowRight")
-    pg.wait_for_function("document.body.innerText.includes('frame 21 /')")
+    _settled(pg, 21)
     assert not pg.errors
 
 
@@ -216,7 +222,7 @@ def _viewer(pg, base, frame):
     pg.goto(f"{base}/#/video/clip?f={frame}")
     pg.reload()
     pg.wait_for_selector("canvas.ov")
-    pg.wait_for_function("document.body.innerText.includes('frame %d /')" % frame)
+    _settled(pg, frame)
 
 
 def _ov(pg):
@@ -352,3 +358,106 @@ def test_mask_panel_is_shown_once(page):
     pg.keyboard.press("b")
     pg.keyboard.press("m")
     assert pg.locator(".side .notice:has-text('New mask')").count() == 1
+
+
+# ---------------------------------------------------------------- the player stays in sync
+def test_scrubbing_the_timeline_keeps_readout_playhead_and_picture_in_step(page):
+    pg, ds, base = page
+    _viewer(pg, base, 0)
+    b = pg.locator(".transport canvas").bounding_box()
+    pg.mouse.move(b["x"] + 3, b["y"] + 40)
+    pg.mouse.down()
+    bad = []
+    for i in range(1, 61):                                    # a wild drag back and forth across the whole bar
+        fx = abs(((i * 7) % 40) - 20) / 20 * 0.96 + 0.02
+        pg.mouse.move(b["x"] + b["width"] * fx, b["y"] + 40)
+        got = pg.evaluate("""async () => { await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+            const r = document.querySelector('.transport canvas').getBoundingClientRect();
+            return { n: V.n, readout: +document.querySelector('.framein').value, painted: V.painted.n, playhead: V.painted.playhead,
+                     w: r.width }; }""")
+        want = int(fx * 60)
+        if not (got["n"] == got["readout"] == got["painted"] == got["playhead"] and abs(got["n"] - want) <= 1):
+            bad.append((i, fx, want, got))
+    pg.mouse.up()
+    assert not bad, bad[:3]
+    n = pg.evaluate("V.n")
+    _settled(pg, n)                                           # and the picture catches up with the same frame
+    assert not pg.errors
+
+
+def test_a_click_lands_on_exactly_the_frame_under_the_mouse_also_when_zoomed(page):
+    pg, ds, base = page
+    _viewer(pg, base, 0)
+    c = pg.locator(".transport canvas")
+    b = c.bounding_box()
+    pg.mouse.move(b["x"] + b["width"] / 2, b["y"] + 40)
+    for _ in range(3):
+        pg.mouse.wheel(0, -300)                               # zoom in around the middle
+    pg.wait_for_function("V.tv.t1 - V.tv.t0 < 40")
+    t0, t1 = pg.evaluate("[V.tv.t0, V.tv.t1]")
+    for fx in (0.05, 0.31, 0.5, 0.77, 0.95):
+        x = b["x"] + b["width"] * fx
+        pg.mouse.click(x, b["y"] + 40)
+        want = min(59, max(0, int(t0 + fx * (t1 - t0))))
+        pg.wait_for_function("w => V.n === w", arg=want)
+        _settled(pg, want)
+        # the playhead is painted at the middle of that frame's column
+        cx = pg.evaluate("tlX(V.n + 0.5)")
+        assert abs(cx - b["width"] * fx) <= b["width"] / (t1 - t0)
+    pg.click("button[title='Show the whole timeline']")
+    pg.wait_for_function("V.tv.t0 === 0 && V.tv.t1 === 60")
+    assert not pg.errors
+
+
+def test_playing_moves_forward_frame_by_frame_and_stops_in_step(page):
+    pg, ds, base = page
+    _viewer(pg, base, 0)
+    pg.evaluate("window.__seen = []; (function loop(){ if (V && V.playing) { const s = window.__seen; if (s[s.length-1] !== V.n) s.push(V.n); } requestAnimationFrame(loop); })()")
+    pg.click(".transport .play")
+    pg.wait_for_function("V.n >= 12")
+    pg.click(".transport .play")                              # pause
+    seen = pg.evaluate("window.__seen")
+    assert seen == sorted(seen) and all(b - a == 1 for a, b in zip(seen, seen[1:])), seen      # never skips, never goes back
+    _settled(pg, pg.evaluate("V.n"))
+    assert not pg.errors
+
+
+def test_zooming_the_picture_keeps_drawing_exact(page):
+    pg, ds, base = page
+    _viewer(pg, base, 46)
+    stage = pg.locator(".stage").bounding_box()
+    pg.mouse.move(stage["x"] + stage["width"] / 2, stage["y"] + stage["height"] / 2)
+    pg.mouse.wheel(0, -600)
+    pg.wait_for_function("V.zoom > 1.5")
+    at = _ov(pg)                                              # the overlay's box now includes the zoom
+    pg.keyboard.press("b")
+    pg.mouse.move(*at(0.40, 0.40))
+    pg.mouse.down()
+    pg.mouse.move(*at(0.50, 0.50), steps=4)
+    pg.mouse.move(*at(0.60, 0.60), steps=4)
+    pg.mouse.up()
+    pg.wait_for_function("V.rows.some(r => r.pending === 'added')")
+    r = pg.evaluate("V.rows.find(r => r.pending === 'added')")
+    assert abs(r["x0"] - 96 * 0.40) < 1.5 and abs(r["y1"] - 64 * 0.60) < 1.5     # picture coordinates, whatever the zoom
+    pg.keyboard.press("0")
+    pg.wait_for_function("V.zoom === 1")
+    assert not pg.errors
+
+
+def test_dragging_the_end_of_a_span_resizes_it(page):
+    pg, ds, base = page
+    _viewer(pg, base, 3)
+    ds.add_annotations([{"kind": "marker", "label": "person", "start_frame": 10, "end_frame": 20, "origin": "human"}], "clip")
+    pg.reload()
+    _settled(pg, 3)
+    pg.wait_for_function("V.tl && V.tl.markers.some(m => m.start_frame === 10 && m.end_frame === 20)")
+    b = pg.locator(".transport canvas").bounding_box()
+    lay = pg.evaluate("tlLayout(V)")
+    y = b["y"] + lay["spans"]["y"] + 6
+    x_end = b["x"] + b["width"] * 21 / 60 - 2                 # just inside the right end
+    pg.mouse.move(x_end, y)
+    pg.mouse.down()
+    pg.mouse.move(b["x"] + b["width"] * 26 / 60, y, steps=5)
+    pg.mouse.up()
+    pg.wait_for_function("V.tl.markers.some(m => m.start_frame === 10 && m.end_frame >= 24 && m.end_frame <= 26 && m.pending)")
+    assert not pg.errors

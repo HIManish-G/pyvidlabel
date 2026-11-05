@@ -58,6 +58,9 @@ class UIState:
     readers: dict = field(default_factory=dict)
     readers_lock: threading.Lock = field(default_factory=threading.Lock)
     video_roots: list[Path] = field(default_factory=list)   # folders searched for videos that moved (this session only)
+    frame_cache: dict = field(default_factory=dict)          # (video, view, frame, max_side) -> JPEG bytes, least recently used first
+    frame_cache_bytes: int = 0
+    latest_seq: dict = field(default_factory=dict)           # page id -> highest request number seen (older ones are dropped)
 
     @property
     def local_only(self) -> bool:
@@ -402,25 +405,34 @@ def _tracks_from_rows(rows: list[dict]) -> list[dict]:
 
 @route("GET", "/api/timeline/{video_id}", covers=("Dataset.annotations",))
 def timeline(state: UIState, ctx: Ctx):
-    """Everything the timeline needs in one call: markers, track spans, and how many annotations each stretch of frames has."""
+    """Everything the timeline needs in one call: markers, track spans, and how many annotations each stretch of frames has.
+    `start`, `end` (exclusive) and `bins` show just a window of the video, so zooming in gets finer counts."""
     ds = state.dataset()
     vid = ctx.params["video_id"]
     view = ctx.q.get("view_id") or None
     n = ds.video(vid).frame_count
+    start = max(0, min(int(ctx.q.get("start", 0)), max(n - 1, 0)))
+    end = max(start + 1, min(int(ctx.q.get("end", n)), max(n, 1)))
+    bins = max(1, min(int(ctx.q.get("bins", 200)), 2000))
     rows = _rows(state, ctx, vid, {"view_id": [view]})
-    bins = 200
-    size = max(1, math.ceil(max(n, 1) / bins))
-    density = [0] * (math.ceil(max(n, 1) / size))
-    by_status = {st: [0] * len(density) for st in ("approved", "unreviewed", "rejected")}
+    size = max(1, math.ceil((end - start) / bins))
+    nb = math.ceil((end - start) / size)
+    density = [0] * nb
+    by_status = {st: [0] * nb for st in ("approved", "unreviewed", "rejected")}
     for r in rows:
         if r.get("_pending") == "deleted" or r["kind"] == "marker":
             continue
-        i = min(r["start_frame"] // size, len(density) - 1)
-        density[i] += 1
-        by_status.setdefault(r["status"], [0] * len(density))[i] += 1
+        a = r["start_frame"]
+        b = r.get("end_frame")
+        b = a if b is None or b < a else b
+        if b < start or a >= end:
+            continue
+        for i in range((max(a, start) - start) // size, (min(b, end - 1) - start) // size + 1):
+            density[i] += 1
+            by_status.setdefault(r["status"], [0] * nb)[i] += 1
     markers = [row_out(r) for r in rows if r["kind"] == "marker"]
-    return out({"frame_count": n, "bin_size": size, "density": density, "by_status": by_status, "markers": markers,
-                "tracks": _tracks_from_rows([r for r in rows if r.get("_pending") != "deleted"])})
+    return out({"frame_count": n, "start": start, "end": end, "bin_size": size, "density": density, "by_status": by_status,
+                "markers": markers, "tracks": _tracks_from_rows([r for r in rows if r.get("_pending") != "deleted"])})
 
 
 def _png(rgba: np.ndarray) -> bytes:
@@ -450,6 +462,48 @@ def _mask_overlay(blob: bytes, view) -> tuple[bytes, int, int] | None:
     rgba[..., :3] = 255
     rgba[..., 3] = crop.astype(np.uint8) * 255
     return _png(rgba), x0, y0
+
+
+@route("GET", "/api/annotations-range/{video_id}", covers=("Dataset.annotations",))
+def annotations_range(state: UIState, ctx: Ctx):
+    """The annotations on frames `start`..`end` (inclusive) in one call, in the pixels of the picture shown, without mask pixels:
+    a mask carries `mask_rev` instead and its image comes from `/api/mask-png`. The player asks for a window around the current
+    frame so stepping and playing need no request per frame."""
+    import zlib
+    ds = state.dataset()
+    vid = ctx.params["video_id"]
+    start, end = int(ctx.q.get("start", 0)), int(ctx.q.get("end", 0))
+    if end < start or end - start > 1200:
+        raise ValueError("ask for at most 1200 frames at a time")
+    view_id = ctx.q.get("view_id") or None
+    view = ds.view(view_id) if view_id else None
+    res = []
+    for r in _rows(state, ctx, vid, {"frames": (start, end), "view_id": [view_id]}):
+        o = row_out({k: v for k, v in r.items() if k != "mask"})
+        if r["kind"] != "marker" and r.get("x0") is not None and view is not None:
+            o["x0"], o["y0"], o["x1"], o["y1"] = view.to_view_box((r["x0"], r["y0"], r["x1"], r["y1"]))
+        if r["kind"] == "mask":
+            o["mask_rev"] = "%08x" % (zlib.crc32(bytes(r["mask"])) if r.get("mask") is not None else 0)
+        res.append(o)
+    return {"start": start, "end": end, "view_id": view_id, "rows": res}
+
+
+@route("GET", "/api/mask-png/{video_id}/{ann_id}", covers=("preview",), raw=True)
+def mask_png(state: UIState, ctx: Ctx):
+    """One mask as a white PNG whose alpha is the mask (cropped to its pixels). Its corner is in `X-Mask-X` and `X-Mask-Y`. The
+    picture only changes when the mask does (`rev`), so it is cached for a long time."""
+    ds = state.dataset()
+    vid, aid, n = ctx.params["video_id"], to_id(ctx.params["ann_id"]), int(ctx.q.get("frame", 0))
+    view_id = ctx.q.get("view_id") or None
+    view = ds.view(view_id) if view_id else None
+    for r in _rows(state, ctx, vid, {"frames": (n, n), "view_id": [view_id]}):
+        if r["annotation_id"] == aid and r.get("mask") is not None:
+            m = _mask_overlay(bytes(r["mask"]), view)
+            if m is None:
+                return Response(status_code=204)
+            cache = "private, max-age=31536000, immutable" if ctx.q.get("rev") else "no-store"
+            return Response(m[0], media_type="image/png", headers={"X-Mask-X": str(m[1]), "X-Mask-Y": str(m[2]), "Cache-Control": cache})
+    raise KeyError(f"no mask {ctx.params['ann_id']} on frame {n} of video '{vid}'")
 
 
 @route("GET", "/api/mask-bits/{video_id}/{ann_id}")
@@ -505,24 +559,69 @@ def _reader(state: UIState, video_id: str, view_id: str | None):
     return entry
 
 
+FRAME_CACHE_LIMIT = 96 * 1024 * 1024
+
+
+def _superseded(state: UIState, ctx: Ctx) -> bool:
+    """True when the page has since asked for something newer (`cid` is the page, `seq` counts its requests). Such a request is
+    not worth decoding: the picture it would produce has already been replaced."""
+    cid, seq = ctx.q.get("cid"), ctx.q.get("seq")
+    if not cid or seq is None:
+        return False
+    with state.readers_lock:
+        return int(seq) < state.latest_seq.get(cid, -1)
+
+
+def _note_seq(state: UIState, ctx: Ctx) -> None:
+    cid, seq = ctx.q.get("cid"), ctx.q.get("seq")
+    if cid and seq is not None:
+        with state.readers_lock:
+            state.latest_seq[cid] = max(state.latest_seq.get(cid, -1), int(seq))
+            while len(state.latest_seq) > 64:
+                state.latest_seq.pop(next(iter(state.latest_seq)))
+
+
 @route("GET", "/api/frame/{video_id}/{frame}", covers=("preview",), raw=True)
 def frame_image(state: UIState, ctx: Ctx):
+    """One frame as a JPEG. Repeated frames come from a small memory cache. A request that the page has already replaced with a
+    newer one (`cid`, `seq`) is answered 204 without decoding, so scrubbing never queues up behind old frames."""
     import cv2
     vid, n = ctx.params["video_id"], int(ctx.params["frame"])
     ds = state.dataset()
     if not 0 <= n < ds.video(vid).frame_count:
         raise KeyError(f"video '{vid}' has no frame {n}")
-    reader, lock = _reader(state, vid, ctx.q.get("view_id") or None)
-    with lock:
-        rgb = reader.read(n)
+    view_id = ctx.q.get("view_id") or None
     max_side = int(ctx.q.get("max_side", 0))
+    _note_seq(state, ctx)
+    key = (vid, view_id, n, max_side)
+    headers = {"Cache-Control": "private, max-age=300"}
+    with state.readers_lock:
+        hit = state.frame_cache.pop(key, None)
+        if hit is not None:
+            state.frame_cache[key] = hit
+    if hit is not None:
+        return Response(hit, media_type="image/jpeg", headers=headers)
+    if _superseded(state, ctx):
+        return Response(status_code=204)
+    reader, lock = _reader(state, vid, view_id)
+    with lock:
+        if _superseded(state, ctx):
+            return Response(status_code=204)
+        rgb = reader.read(n)
     if max_side and max(rgb.shape[:2]) > max_side:
-        s = max_side / max(rgb.shape[:2])
-        rgb = cv2.resize(rgb, (round(rgb.shape[1] * s), round(rgb.shape[0] * s)), interpolation=cv2.INTER_AREA)
-    ok, buf = cv2.imencode(".jpg", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 88])
+        scale = max_side / max(rgb.shape[:2])
+        rgb = cv2.resize(rgb, (round(rgb.shape[1] * scale), round(rgb.shape[0] * scale)), interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".jpg", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 90])
     if not ok:
         raise RuntimeError("could not encode the frame")
-    return Response(buf.tobytes(), media_type="image/jpeg", headers={"Cache-Control": "private, max-age=300"})
+    data = buf.tobytes()
+    with state.readers_lock:
+        if key not in state.frame_cache:
+            state.frame_cache[key] = data
+            state.frame_cache_bytes += len(data)
+        while state.frame_cache_bytes > FRAME_CACHE_LIMIT and len(state.frame_cache) > 1:
+            state.frame_cache_bytes -= len(state.frame_cache.pop(next(iter(state.frame_cache))))
+    return Response(data, media_type="image/jpeg", headers=headers)
 
 
 # ------------------------------------------------------------------ the draft

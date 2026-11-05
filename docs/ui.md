@@ -87,8 +87,23 @@ it, so you can draw a box, press → and draw the next one. A mask is saved with
 stroke by stroke with Ctrl+Z. To change an existing mask, select it and choose **Edit mask shape**, paint or erase, then **Apply to the mask**;
 its box follows the new shape. New rows are marked as made by a person (`origin` human, status unreviewed) with your name as the author.
 
+Masks: **Alt**-drag erases with the brush, **Shift**-click draws a straight line from the last point, `[` and `]` change the size, a slider sets
+the opacity, and Undo and Redo step through strokes. A mask in progress belongs to the frame it was started on; if you move away the panel
+offers to go back, and it can only be saved onto that frame. Polygon corners can be dragged before the shape is closed.
+
 Keys: ← → step a frame, Shift 10 frames, Space plays, Home and End, Delete removes the selected row, Esc cancels a polygon or drag, Ctrl+Z and
-Ctrl+Y undo and redo your draft.
+Ctrl+Y undo and redo your draft (or your mask strokes while a mask is open).
+
+## Playing and moving around
+
+The frame box, the time, the timeline and the picture always show the same frame. If a frame takes a moment to load, the previous picture
+stays with its own annotations and the corner says "loading frame N". Drawing waits until the picture is the right one.
+
+- **Timeline:** drag anywhere on it to move through the video. Scroll to zoom around the pointer, Shift-scroll to pan, drag the box in the
+  small overview at the bottom, or use the −, + and Fit buttons. Counts by status, spans and tracks are shown in lanes; with the Select tool, drag
+  a span's end to resize it or its middle to move it.
+- **Picture:** scroll over it to zoom, middle-drag to pan, `0` (or **Reset zoom**) to fit. Drawing stays exact at any zoom.
+- **Play** uses the video's frame rate (0.25× to 2×) and waits for a frame rather than skipping one; **Loop** starts again at the end.
 
 ## Slow work runs as jobs
 

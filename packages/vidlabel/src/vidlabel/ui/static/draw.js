@@ -44,7 +44,7 @@ function needLabel() {
 }
 function nextTrackId() { return Math.max(0, ...((V.tl && V.tl.tracks) || []).map(t => t.track_id)) + 1; }
 function trackValue() { return V.track === "none" ? null : V.track === "new" ? nextTrackId() : +V.track; }
-async function afterEdit() { await show(V.n); await loadTimeline(); paintToolbar(); }
+async function afterEdit() { await show(V.n); paintToolbar(); }
 
 /* ---------- pointer events on the overlay ---------- */
 function bindDrawing(ov) {
@@ -60,34 +60,46 @@ const clampPt = p => [Math.max(0, Math.min(V.size[0], p[0])), Math.max(0, Math.m
 const pxScale = () => { const c = V.el.ov, r = c.getBoundingClientRect(); return c.width / Math.max(1, r.width); };
 
 function onDown(ev) {
+  if (V.shown !== V.n) return;                         // the picture on screen is not this frame yet: nothing to draw on
   const p = clampPt(pt(ev));
   if (V.tool === "select") return selectDown(p);
   if (V.tool === "span") return;
   if (!needLabel()) return;
   if (V.tool === "box") V.drag = { kind: "new", a: p, rect: [p[0], p[1], p[0], p[1]] };
-  else if (V.tool === "brush" || V.tool === "eraser") { ensureWork(); pushSnap(); V.stroke = { erase: V.tool === "eraser", last: p }; strokeTo(p, p); }
-  else if (V.tool === "polygon") polyClick(p);
+  else if (V.tool === "brush" || V.tool === "eraser") {
+    ensureWork(); if (V.work.frame !== V.n) { toast(`This mask belongs to frame ${V.work.frame}. Save or discard it, or go back to that frame.`, true); return; }
+    pushSnap();
+    const erase = V.tool === "eraser" || ev.altKey, from = ev.shiftKey && V.work.lastPt ? V.work.lastPt : p;     // Shift-click draws a straight line from the last point
+    V.stroke = { erase, last: from }; strokeTo(from, p); V.work.lastPt = p; V.stroke.last = p;
+  }
+  else if (V.tool === "polygon") polyClick(p, ev);
 }
 function onMove(ev) {
   const p = clampPt(pt(ev));
-  V.cursor = p;
+  V.cursor = p; V.shiftDown = ev.shiftKey;
   if (V.drag) {
     const d = V.drag;
     if (d.kind === "new") d.rect = [d.a[0], d.a[1], p[0], p[1]];
     else if (d.kind === "move") { const dx = p[0] - d.start[0], dy = p[1] - d.start[1], [x0, y0, x1, y1] = d.orig;
       const w = x1 - x0, hh = y1 - y0, nx = Math.max(0, Math.min(V.size[0] - w, x0 + dx)), ny = Math.max(0, Math.min(V.size[1] - hh, y0 + dy)); d.rect = [nx, ny, nx + w, ny + hh]; }
+    else if (d.kind === "vertex") V.poly[d.i] = p;
     else if (d.kind === "resize") { const r = d.orig.slice(); if (d.handle.includes("w")) r[0] = p[0]; if (d.handle.includes("e")) r[2] = p[0]; if (d.handle.includes("n")) r[1] = p[1]; if (d.handle.includes("s")) r[3] = p[1]; d.rect = r; }
-  } else if (V.stroke) { strokeTo(V.stroke.last, p); V.stroke.last = p; return; }
+  } else if (V.stroke) {
+    const evs = ev.getCoalescedEvents ? ev.getCoalescedEvents() : [];
+    for (const e of evs.length ? evs : [ev]) { const q = clampPt(pt(e)); strokeTo(V.stroke.last, q); V.stroke.last = q; }
+    V.work.lastPt = V.stroke.last; return;
+  }
   drawOverlay();
 }
 async function onUp(ev) {
-  if (V.stroke) { V.stroke = null; drawSide(); return; }
+  if (V.stroke) { V.stroke = null; V.work.redo = []; drawSide(); return; }
   const d = V.drag; if (!d) return;
   V.drag = null;
+  if (d.kind === "vertex") { drawOverlay(); return; }
   const [a, b, c, e] = d.rect, r = [Math.min(a, c), Math.min(b, e), Math.max(a, c), Math.max(b, e)].map(x => Math.round(x * 10) / 10);
   if (d.kind === "new") {
     if (r[2] - r[0] < 3 || r[3] - r[1] < 3) { drawOverlay(); return; }
-    const row = { kind: "box", label: V.label, start_frame: V.n, box: r }, tv = trackValue();
+    const row = { kind: "box", label: V.label, start_frame: V.shown, box: r }, tv = trackValue();
     if (tv != null) row.track_id = tv;
     const res = await draftOp("/api/draft/add", { video_id: V.vid, row });
     if (res) { V.sel = res.id; if (V.track === "new") V.track = String(tv); await afterEdit(); }
@@ -115,20 +127,26 @@ function selectDown(p) {
   V.sel = hits.length ? hits[0].annotation_id : null;
   const row = hits[0];
   if (editableBox(row)) V.drag = { kind: "move", row, start: p, orig: [row.x0, row.y0, row.x1, row.y1], rect: [row.x0, row.y0, row.x1, row.y1] };
-  draw(); drawSide(); drawOverlay();
+  draw(); drawSide();
 }
 
-/* ---------- masks: a working layer the size of the frame ---------- */
+/* ---------- masks: a working layer the size of the frame, painted on the overlay so a stroke never repaints the picture ---------- */
 function ensureWork() {
   if (V.work) return;
   const mk = () => { const c = document.createElement("canvas"); c.width = V.size[0]; c.height = V.size[1]; return c; };
-  V.work = { cv: mk(), tint: mk(), target: null, label: null, snaps: [] };
+  V.work = { cv: mk(), tint: mk(), target: null, label: null, frame: V.n, snaps: [], redo: [], lastPt: null };
   drawSide();
 }
-function pushSnap() { const w = V.work; w.snaps.push(w.cv.getContext("2d").getImageData(0, 0, w.cv.width, w.cv.height)); if (w.snaps.length > 8) w.snaps.shift(); }
+const snapLimit = () => Math.max(4, Math.min(30, Math.floor(240e6 / (V.size[0] * V.size[1] * 4))));
+function grab(w) { return w.cv.getContext("2d").getImageData(0, 0, w.cv.width, w.cv.height); }
+function pushSnap() { const w = V.work; w.snaps.push(grab(w)); w.redo = []; if (w.snaps.length > snapLimit()) w.snaps.shift(); }
 function undoStroke() {
   const w = V.work; if (!w || !w.snaps.length) return false;
-  w.cv.getContext("2d").putImageData(w.snaps.pop(), 0, 0); retint(); draw(); drawOverlay(); return true;
+  w.redo.push(grab(w)); w.cv.getContext("2d").putImageData(w.snaps.pop(), 0, 0); w.lastPt = null; retint(); drawOverlay(); drawSide(); return true;
+}
+function redoStroke() {
+  const w = V.work; if (!w || !w.redo.length) return false;
+  w.snaps.push(grab(w)); w.cv.getContext("2d").putImageData(w.redo.pop(), 0, 0); w.lastPt = null; retint(); drawOverlay(); drawSide(); return true;
 }
 function retint() {
   const w = V && V.work; if (!w) return;
@@ -137,23 +155,32 @@ function retint() {
 }
 let _raf = 0;
 function strokeTo(a, b) {
-  const x = V.work.cv.getContext("2d");
-  x.globalCompositeOperation = V.stroke.erase ? "destination-out" : "source-over";
-  x.strokeStyle = x.fillStyle = "#fff"; x.lineWidth = V.brush * 2; x.lineCap = x.lineJoin = "round";
-  x.beginPath(); x.moveTo(a[0], a[1]); x.lineTo(b[0], b[1]); x.stroke();
-  x.beginPath(); x.arc(b[0], b[1], V.brush, 0, 2 * Math.PI); x.fill();
-  x.globalCompositeOperation = "source-over";
-  if (!_raf) _raf = requestAnimationFrame(() => { _raf = 0; if (V && V.work) { retint(); draw(); drawOverlay(); } });
+  const w = V.work, erase = V.stroke.erase, col = labelColor(w.label || V.label);
+  for (const [cv, fill] of [[w.cv, "#fff"], [w.tint, col]]) {         // the tinted copy is painted along, so nothing is recomputed per stroke
+    const x = cv.getContext("2d");
+    x.globalCompositeOperation = erase ? "destination-out" : "source-over";
+    x.strokeStyle = x.fillStyle = fill; x.lineWidth = V.brush * 2; x.lineCap = x.lineJoin = "round";
+    x.beginPath(); x.moveTo(a[0], a[1]); x.lineTo(b[0], b[1]); x.stroke();
+    x.beginPath(); x.arc(b[0], b[1], V.brush, 0, 2 * Math.PI); x.fill();
+    x.globalCompositeOperation = "source-over";
+  }
+  if (!_raf) _raf = requestAnimationFrame(() => { _raf = 0; if (V && V.work) drawOverlay(); });
 }
-function polyClick(p) {
-  if (V.poly.length >= 3 && Math.hypot(p[0] - V.poly[0][0], p[1] - V.poly[0][1]) < 10 * pxScale()) return closePoly();
+function polyClick(p, ev) {
+  const s = pxScale();
+  if (V.poly.length >= 3 && Math.hypot(p[0] - V.poly[0][0], p[1] - V.poly[0][1]) < 10 * s) return closePoly();
+  const i = V.poly.findIndex((q, k) => k > 0 && Math.hypot(p[0] - q[0], p[1] - q[1]) < 8 * s);       // grab a corner to move it
+  if (i > 0) { V.drag = { kind: "vertex", i }; return; }
   V.poly.push(p); drawOverlay();
 }
 function closePoly() {
   if (V.poly.length < 3) { V.poly = []; drawOverlay(); return; }
   ensureWork(); pushSnap();
-  const x = V.work.cv.getContext("2d"); x.fillStyle = "#fff"; x.beginPath(); V.poly.forEach((q, i) => (i ? x.lineTo(q[0], q[1]) : x.moveTo(q[0], q[1]))); x.closePath(); x.fill();
-  V.poly = []; retint(); draw(); drawOverlay(); drawSide();
+  const pts = V.poly;
+  for (const [cv, fill] of [[V.work.cv, "#fff"], [V.work.tint, labelColor(V.work.label || V.label)]]) {
+    const x = cv.getContext("2d"); x.fillStyle = fill; x.beginPath(); pts.forEach((q, i) => (i ? x.lineTo(q[0], q[1]) : x.moveTo(q[0], q[1]))); x.closePath(); x.fill();
+  }
+  V.poly = []; drawOverlay(); drawSide();
 }
 function packMask(cv) {
   const W = cv.width, H = cv.height, d = cv.getContext("2d").getImageData(0, 0, W, H).data, bytes = new Uint8Array((W * H + 7) >> 3);
@@ -169,7 +196,7 @@ async function saveMask() {
   let res;
   if (w.target) res = await draftOp("/api/draft/update", { video_id: V.vid, ids: [w.target], values: { mask_bits: bits } });
   else {
-    const row = { kind: "mask", label: V.label, start_frame: V.n, mask_bits: bits }, tv = trackValue();
+    const row = { kind: "mask", label: V.label, start_frame: w.frame, mask_bits: bits }, tv = trackValue();
     if (tv != null) row.track_id = tv;
     res = await draftOp("/api/draft/add", { video_id: V.vid, row });
     if (res) { V.sel = res.id; if (V.track === "new") V.track = String(tv); }
@@ -177,15 +204,15 @@ async function saveMask() {
   if (res) { V.work = null; if (!MASK_TOOLS.includes(V.tool)) V.tool = "select"; await afterEdit(); }
 }
 async function editMask(row) {
-  const b = await attempt(() => GET(`/api/mask-bits/${encodeURIComponent(V.vid)}/${encodeURIComponent(row.annotation_id)}`, { frame: V.n }));
+  const frame = V.shown, b = await attempt(() => GET(`/api/mask-bits/${encodeURIComponent(V.vid)}/${encodeURIComponent(row.annotation_id)}`, { frame }));
   if (!b) return;
-  V.work = null; ensureWork();
+  V.work = null; ensureWork(); V.work.frame = frame;
   const img = new ImageData(b.width, b.height), raw = atob(b.data);
   for (let i = 0; i < b.width * b.height; i++) { const o = i * 4; img.data[o] = img.data[o + 1] = img.data[o + 2] = 255; img.data[o + 3] = (raw.charCodeAt(i >> 3) >> (7 - (i & 7))) & 1 ? 255 : 0; }
   V.work.cv.getContext("2d").putImageData(img, 0, 0); V.work.target = row.annotation_id; V.work.label = row.label;
   retint(); setTool("brush"); draw();
 }
-function discardMask() { V.work = null; V.poly = []; draw(); drawSide(); drawOverlay(); }
+function discardMask() { V.work = null; V.poly = []; draw(); drawSide(); }
 
 /* ---------- spans on the timeline ---------- */
 function spanStart(e) {
@@ -207,6 +234,7 @@ function drawOverlay() {
   const ov = V.el.ov, x = ov.getContext("2d"), lw = Math.max(2, ov.width / 360), s = pxScale();
   x.clearRect(0, 0, ov.width, ov.height);
   const pink = "#ff4fa6";
+  if (V.work && V.shown === V.work.frame) { x.globalAlpha = Math.min(1, V.maskAlpha + .15); x.drawImage(V.work.tint, 0, 0); x.globalAlpha = 1; }
   if (V.drag) { const [a, b, c, e] = V.drag.rect; x.strokeStyle = pink; x.lineWidth = lw; x.setLineDash([lw * 3, lw * 2]); x.strokeRect(Math.min(a, c), Math.min(b, e), Math.abs(c - a), Math.abs(e - b)); x.setLineDash([]); }
   const sel = V.rows.find(r => r.annotation_id === V.sel);
   if (V.tool === "select" && editableBox(sel)) {
@@ -217,8 +245,9 @@ function drawOverlay() {
   if (V.poly.length) {
     x.strokeStyle = pink; x.fillStyle = pink; x.lineWidth = lw;
     x.beginPath(); V.poly.forEach((q, i) => (i ? x.lineTo(q[0], q[1]) : x.moveTo(q[0], q[1]))); if (V.cursor) x.lineTo(V.cursor[0], V.cursor[1]); x.stroke();
-    V.poly.forEach((q, i) => { x.beginPath(); x.arc(q[0], q[1], (i ? 3 : 6) * s, 0, 2 * Math.PI); x.fill(); });
+    V.poly.forEach((q, i) => { x.beginPath(); x.arc(q[0], q[1], (i ? 4 : 7) * s, 0, 2 * Math.PI); x.fill(); x.strokeStyle = "#fff"; x.lineWidth = 1.5 * s; x.stroke(); });
   }
+  if (V.stroke === null && V.work && V.work.lastPt && V.cursor && V.shiftDown && (V.tool === "brush" || V.tool === "eraser")) { x.strokeStyle = pink; x.lineWidth = lw; x.setLineDash([lw * 3, lw * 2]); x.beginPath(); x.moveTo(V.work.lastPt[0], V.work.lastPt[1]); x.lineTo(V.cursor[0], V.cursor[1]); x.stroke(); x.setLineDash([]); }
   if ((V.tool === "brush" || V.tool === "eraser") && V.cursor) { x.strokeStyle = "#fff"; x.lineWidth = 1.5 * s; x.beginPath(); x.arc(V.cursor[0], V.cursor[1], V.brush, 0, 2 * Math.PI); x.stroke(); x.strokeStyle = "#000"; x.lineWidth = .75 * s; x.stroke(); }
 }
 
@@ -226,18 +255,23 @@ function drawOverlay() {
 function drawPanel() {
   const out = [];
   if (V.work) {
-    const w = V.work;
-    out.push(h("div", { class: "notice" }, h("b", {}, w.target ? "Editing a mask" : "New mask"), h("div", { class: "muted" }, w.target ? `Label ${w.label}. Brush adds, eraser removes, polygon adds a shape.` : `Label ${V.label}. Brush and polygon add, eraser removes.`),
-      h("label", { class: "row tight", style: "margin:6px 0" }, "Brush size", h("input", { type: "range", min: 1, max: Math.max(20, Math.round(Math.min(...V.size) / 6)), value: V.brush, oninput: e => { V.brush = +e.target.value; drawOverlay(); } })),
-      h("div", { class: "row tight" }, h("button", { class: "primary small", onclick: saveMask }, w.target ? "Apply to the mask" : "Save mask"), h("button", { class: "small", onclick: () => undoStroke() }, "Undo stroke"),
+    const w = V.work, off = w.frame !== V.n;
+    out.push(h("div", { class: "notice" }, h("b", {}, w.target ? "Editing a mask" : "New mask"), h("span", { class: "muted" }, ` on frame ${w.frame}`),
+      off ? h("div", { class: "row tight", style: "margin:4px 0" }, h("span", { class: "muted" }, `You are on frame ${V.n}.`), h("button", { class: "small", onclick: () => goto(w.frame) }, `Go to frame ${w.frame}`)) : null,
+      h("div", { class: "muted" }, w.target ? `Label ${w.label}. Brush adds, eraser removes, polygon adds a shape.` : `Label ${V.label}. Brush and polygon add, eraser removes.`),
+      h("div", { class: "muted", style: "font-size:12.5px" }, "Alt-drag erases · Shift-click draws a straight line · [ ] change the size"),
+      h("label", { class: "row tight", style: "margin:6px 0" }, "Brush", h("input", { type: "range", min: 1, max: Math.max(20, Math.round(Math.min(...V.size) / 4)), value: V.brush, oninput: e => { V.brush = +e.target.value; e.target.nextSibling.textContent = V.brush * 2 + " px"; drawOverlay(); } }), h("span", { class: "mono" }, V.brush * 2 + " px")),
+      h("label", { class: "row tight", style: "margin:6px 0" }, "Opacity", h("input", { type: "range", min: 10, max: 90, value: Math.round(V.maskAlpha * 100), oninput: e => { V.maskAlpha = e.target.value / 100; draw(); } })),
+      h("div", { class: "row tight" }, h("button", { class: "primary small", onclick: saveMask }, w.target ? "Apply to the mask" : "Save mask"),
+        h("button", { class: "small", disabled: !w.snaps.length, onclick: () => undoStroke() }, "Undo"), h("button", { class: "small", disabled: !w.redo.length, onclick: () => redoStroke() }, "Redo"),
         h("button", { class: "small", onclick: discardMask }, "Discard"))));
   } else if (V.tool === "box") out.push(h("p", { class: "muted" }, "Drag on the frame to draw a box. It is recorded at this frame; step forward with →, and draw again to follow the same track."));
-  else if (V.tool === "span") out.push(h("p", { class: "muted" }, "Drag on the timeline to label a stretch of frames. A click labels one frame."));
-  else if (V.tool === "polygon") out.push(h("p", { class: "muted" }, "Click to place corners; click the first point, double-click or press Enter to close the shape. Backspace removes the last corner."));
+  else if (V.tool === "span") out.push(h("p", { class: "muted" }, "Drag on the timeline to label a stretch of frames. A click labels one frame. With the Select tool you can drag a span's ends to resize it."));
+  else if (V.tool === "polygon") out.push(h("p", { class: "muted" }, "Click to place corners; click the first point, double-click or press Enter to close the shape. Drag a corner to move it. Backspace removes the last corner."));
   return out;
 }
 function selectionPanel() {
-  const r = V.rows.find(x => x.annotation_id === V.sel);
+  const r = V.rows.find(x => x.annotation_id === V.sel) || (V.tl ? V.tl.markers.find(x => x.annotation_id === V.sel) : null);
   if (!r || r.pending === "deleted") return null;
   const id = r.annotation_id, vid = V.vid, labels = S.info.labels;
   const labelSel = h("select", { "aria-label": "Label", onchange: async e => { if (await draftOp("/api/draft/update", { video_id: vid, ids: [id], values: { label: e.target.value } })) afterEdit(); } },
@@ -262,6 +296,7 @@ function drawKey(ev) {
   if (!V || ev.altKey) return false;
   const k = ev.key, low = k.toLowerCase(), mod = ev.ctrlKey || ev.metaKey;
   if (mod && low === "z" && !ev.shiftKey && V.work && V.work.snaps.length) { undoStroke(); return true; }
+  if (mod && ((low === "z" && ev.shiftKey) || low === "y") && V.work && V.work.redo.length) { redoStroke(); return true; }
   if (mod) return false;
   const tool = TOOLS.find(t => t[2].toLowerCase() === low);
   if (tool) { setTool(tool[0]); return true; }

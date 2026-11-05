@@ -434,3 +434,39 @@ def test_wrong_size_or_empty_mask_is_refused(env):
     aid = ds.annotations("clip", kind="mask").column("annotation_id")[0].as_py()
     empty = post(c, "/api/draft/update", {"video_id": "clip", "ids": [str(aid)], "values": {"mask_bits": _bits(np.zeros((64, 96), bool))}})
     assert empty.status_code == 400 and "empty" in empty.json()["error"]
+
+
+# ---------------------------------------------------------------- the player's routes
+def test_annotations_range_has_no_mask_pixels_and_a_revision(env):
+    c, ds, st = env
+    d = c.get("/api/annotations-range/clip", params={"start": 0, "end": 20}).json()
+    masks = [r for r in d["rows"] if r["kind"] == "mask"]
+    assert masks and all("mask" not in r and len(r["mask_rev"]) == 8 for r in masks)
+    assert {r["start_frame"] for r in d["rows"]} and c.get("/api/annotations-range/clip", params={"start": 0, "end": 5000}).status_code == 400
+
+
+def test_mask_png_returns_the_corner_and_is_cached_by_revision(env):
+    c, ds, st = env
+    m = [r for r in c.get("/api/annotations-range/clip", params={"start": 3, "end": 3}).json()["rows"] if r["kind"] == "mask"][0]
+    r = c.get(f"/api/mask-png/clip/{m['annotation_id']}", params={"frame": 3, "rev": m["mask_rev"]})
+    assert r.status_code == 200 and r.headers["content-type"] == "image/png"
+    assert (r.headers["x-mask-x"], r.headers["x-mask-y"]) == ("30", "20") and "immutable" in r.headers["cache-control"]
+    assert c.get(f"/api/mask-png/clip/{m['annotation_id']}", params={"frame": 3}).headers["cache-control"] == "no-store"
+
+
+def test_timeline_window_gets_finer_counts(env):
+    c, ds, st = env
+    whole = c.get("/api/timeline/clip").json()
+    part = c.get("/api/timeline/clip", params={"start": 0, "end": 10, "bins": 10}).json()
+    assert (part["start"], part["end"], part["bin_size"], len(part["density"])) == (0, 10, 1, 10)
+    assert sum(part["density"]) > 0
+    assert [sum(x) for x in zip(*part["by_status"].values())] == part["density"]
+
+
+@pytest.mark.skipif(not HAVE_FFMPEG, reason="ffmpeg")
+def test_old_frame_requests_are_dropped_and_cached_frames_are_reused(env):
+    c, ds, st = env
+    assert c.get("/api/frame/clip/7", params={"cid": "a", "seq": 5}).status_code == 200      # decoded and cached
+    assert c.get("/api/frame/clip/8", params={"cid": "a", "seq": 6}).status_code == 200
+    assert c.get("/api/frame/clip/9", params={"cid": "a", "seq": 4}).status_code == 204      # replaced by newer requests already
+    assert c.get("/api/frame/clip/7", params={"cid": "a", "seq": 3}).status_code == 200      # but a cached frame is free to send

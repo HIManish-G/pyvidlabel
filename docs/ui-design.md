@@ -108,11 +108,30 @@ Every command and public `Dataset` method has a place:
 
 ## The viewer and its tools
 
-- Frame-accurate scrubbing with the library reader, a timeline of markers and tracks, keyboard shortcuts (step, jump to next annotation).
-- Overlays drawn in the browser from JSON; masks decoded on the server and sent as small images.
+**One current frame.** `V.n` is the only record of where the viewer is. The frame box, the time, the timeline playhead, the picture and
+its annotations are all painted from it by one function, once per animation frame; moving only ever calls `goto(n)`. Nothing keeps a second
+copy that could drift (the old viewer had a slider, a timeline and a picture each updated at its own moment).
+
+- **Pictures:** the page fetches frames through a small scheduler (the current frame first; only once it is on screen, the neighbours
+  ahead in the direction of travel), keeps them decoded in an LRU cache of bitmaps and cancels requests it no longer wants. The server
+  answers 204 without decoding for a request the page has since replaced (`cid`, `seq`), and keeps recently sent JPEGs in memory.
+- **Lag is shown, never hidden:** if the picture for `V.n` is still being decoded, the page keeps the previous picture with *its own*
+  annotations (`V.shown`) and says "loading frame N". Drawing is refused until the two agree, so nothing can be recorded on the wrong frame.
+- **Annotations** come in chunks of 128 frames (`/api/annotations-range`, no mask pixels); a mask is a PNG fetched once per revision and
+  cached for good (`/api/mask-png`). Stepping and playing make no request per frame.
+- **Playback** follows a clock: the frame that should be showing is worked out from elapsed time and shown only when it is already decoded.
+  A slow decode waits (the clock is moved on) instead of skipping, so frames are never missed or shown out of order.
+- **Timeline:** frame *f* occupies the stretch [f, f+1) of the axis, and drawing and the mouse use the same two functions, so the
+  playhead is always at the middle of the column under the cursor. A ruler with timecodes, annotation counts by status (re-fetched at finer
+  resolution as you zoom, `/api/timeline` with `start`, `end`, `bins`), spans and tracks packed in lanes, a minimap, scroll to zoom,
+  Shift-scroll to pan, spans resized and moved by their ends.
+- **Picture zoom and pan:** scroll zooms around the pointer, middle-drag pans, `0` fits. Pointer positions are converted from the picture's
+  own screen rectangle, so drawing is exact at any zoom.
 - **Box tool:** drag to draw, handles to resize, the label and track in a side panel.
 - **Span tool:** drag on the timeline to make or resize a marker.
-- **Mask tools:** brush, eraser and polygon, working on a canvas the size of the frame. Saved through `add_annotations` with a boolean array,
+- **Mask tools:** brush, eraser and polygon, working on a layer the size of the frame that is painted on the overlay, so a stroke never
+  repaints the picture. Undo and redo for strokes, Shift-click for a straight line, Alt to erase, polygon corners can be dragged, and a mask
+  in progress remembers its own frame, so it cannot be saved onto another one. Saved through `add_annotations` with a boolean array,
   so the codec, bounding box and size checks are the library's. A mask drawn in a view uses `coords="view"`.
 - Not planned for version 1: AI-assisted segmentation (it would mean shipping a model), automatic tracking.
 
@@ -150,6 +169,7 @@ browser. The page is a client of this interface, so a script could use it too. T
 | 1. server, draft, history, jobs, routes, tests; Overview, Videos, Viewer (read only plus approve, reject and delete of rows), Review, Validation, Releases, History, Changes panel | built |
 | 2. builder pages: Labels, Videos (add, check, index, folders for moved files, frame cache), Views (draw a region, create, copy labels in with a preview) | built |
 | 3. drawing: select, move and resize boxes, new boxes, spans on the timeline, masks with brush, eraser and polygon, editing an existing mask | built (whole frame only; views get rows through Copy labels in) |
+| 3b. viewer rework: single current frame, frame cache and prefetch, playback clock, new timeline (zoom, lanes, minimap, span editing), picture zoom and pan, mask editor polish | built |
 | 4. polish and the sample inspector page | the sample inspector is on the Releases page; the rest is not built |
 
 ## Visual identity
