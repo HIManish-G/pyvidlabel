@@ -17,7 +17,7 @@ env/
 htmlcov/
 .mypy_cache/
 .ruff_cache/
-
+wiki-out/
 # Editors and OS
 .vscode/
 .idea/

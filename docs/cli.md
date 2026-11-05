@@ -260,6 +260,26 @@ vidlabel cache path out [options]
 | `--root` | none | Folder(s) to search for the videos by file name. |
 | `--overwrite` / `--no-overwrite` | off | Re-decode frames that are already cached. |
 
+## `ui`
+
+Open the local web interface. Needs `pip install "vidlabel[ui]"`.
+
+```
+vidlabel ui path [options]
+```
+
+| argument | |
+|---|---|
+| `path` | optional |
+
+| option | default | what it does |
+|---|---|---|
+| `--host` | `127.0.0.1` | Address to listen on. The default is this computer only; use 0.0.0.0 to share on your network. |
+| `--port` | `8765` | Port. If it is busy the next free one is used. |
+| `--no-browser` | off | Do not open a browser window. |
+| `--fs-root` | none | Only allow the file picker inside this folder (repeat for more). Required for file access when sharing. |
+| `--token` | none | Use this access token instead of a random one (so a shared address stays the same). |
+
 ## `schema`
 
 Print (or write) the JSON Schema of the spec.

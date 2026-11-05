@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vidlabel</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%232563eb'/%3E%3Cpath d='M4 5h8v6H4z' fill='none' stroke='white' stroke-width='1.5'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header id="top">
+  <a class="brand" href="#/overview">vidlabel</a>
+  <nav id="nav"></nav>
+  <div class="spacer"></div>
+  <button id="jobs-btn" class="chip" hidden></button>
+  <button id="changes-btn" class="chip">Changes <span class="badge" id="changes-count">0</span></button>
+  <button id="author-btn" class="chip" title="Your name is saved with the changes you commit"></button>
+</header>
+<main id="main"></main>
+<aside id="drawer" hidden></aside>
+<div id="toasts"></div>
+<div id="modal-root"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

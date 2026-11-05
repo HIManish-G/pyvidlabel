@@ -402,7 +402,8 @@ class Dataset:
         return n
 
     def derive_view_rows(self, video_id: str, view_id: str, *, labels: Sequence[str] | None = None,
-                         origins: Sequence[str] | None = None, statuses: Sequence[str] = ("unreviewed", "approved")) -> dict[str, Any]:
+                         origins: Sequence[str] | None = None, statuses: Sequence[str] = ("unreviewed", "approved"),
+                         dry_run: bool = False) -> dict[str, Any]:
         """Copy whole-frame rows into a view, for the rows that belong there: frames inside the view's time windows, box or mask
         entirely inside its region, label allowed in the view. Each copy keeps its columns (including `track_id`), gets the
         view's `view_id` and a new `annotation_id`, and records its source in `extra["derived_from"]`, so running this again
@@ -410,7 +411,7 @@ class Dataset:
         or mask would change it): they are counted in `skipped_partial`.
 
         Returns `copied`, `ids`, `already_derived`, and the skip counts `skipped_partial`, `skipped_outside`, `skipped_label`,
-        `skipped_frames`. Whole-frame samples (no `view_id`) then see both the original and the copy: build whole-frame releases
+        `skipped_frames`. With `dry_run=True` nothing is written and `copied` is how many rows would be. Whole-frame samples (no `view_id`) then see both the original and the copy: build whole-frame releases
         with `build(view_ids=[None])` to leave the copies out."""
         view = self.view(view_id)
         if view.video_id != video_id:
@@ -451,8 +452,8 @@ class Dataset:
             extra["derived_from"] = r["annotation_id"]
             row.update(view_id=view_id, extra=extra)
             rows.append(row)
-        ids = self.add_annotations(rows, video_id) if rows else []
-        return {"copied": len(ids), "ids": ids, **stats}
+        ids = self.add_annotations(rows, video_id) if rows and not dry_run else []
+        return {"copied": len(rows) if dry_run else len(ids), "ids": ids, "dry_run": dry_run, **stats}
 
     # ---- tracks: review one object at a time ----
     def _track_ids(self, video_id: str, track_id: int, view_id: str | None) -> list[int]:

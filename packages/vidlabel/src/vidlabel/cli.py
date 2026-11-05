@@ -408,6 +408,45 @@ def cache_cmd(path: Path, out: Path,
 
 
 @_command()
+def ui(path: Path = typer.Argument(Path("."), help="The dataset folder (a folder that is not a dataset yet starts in setup mode)."),
+       host: str = typer.Option("127.0.0.1", help="Address to listen on. The default is this computer only; use 0.0.0.0 to share on your network."),
+       port: int = typer.Option(8765, help="Port. If it is busy the next free one is used."),
+       no_browser: bool = typer.Option(False, "--no-browser", help="Do not open a browser window."),
+       fs_root: Optional[list[Path]] = typer.Option(None, "--fs-root", help="Only allow the file picker inside this folder (repeat for more). Required for file access when sharing."),
+       token: Optional[str] = typer.Option(None, help="Use this access token instead of a random one (so a shared address stays the same).")):
+    """Open the local web interface. Needs `pip install "vidlabel[ui]"`."""
+    try:
+        import uvicorn
+        from .ui.app import create_app
+    except ImportError as e:
+        typer.echo(f'[error] the web interface needs extra packages: pip install "vidlabel[ui]"  ({e})')
+        raise typer.Exit(1)
+    import secrets
+    import socket
+    import threading
+    import webbrowser
+    for p in range(port, port + 20):
+        with socket.socket() as s:
+            if s.connect_ex(("127.0.0.1" if host in ("127.0.0.1", "localhost") else host, p)) != 0:
+                port = p
+                break
+    else:
+        typer.echo(f"[error] no free port between {port} and {port + 19}")
+        raise typer.Exit(1)
+    token = token or secrets.token_urlsafe(24)
+    application = create_app(path, token=token, host=host, port=port, fs_roots=fs_root)
+    shown = "localhost" if host in ("127.0.0.1", "localhost") else host
+    url = f"http://{shown}:{port}/?token={token}"
+    typer.echo(f"vidlabel interface for {path.resolve()}\n  open: {url}\n  stop: Ctrl+C")
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        typer.echo("[note] shared on your network: anyone with this address can change the dataset. File access is "
+                   + ("limited to --fs-root folders." if fs_root else "off (add --fs-root FOLDER to allow one)."))
+    if not no_browser:
+        threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+    uvicorn.run(application, host=host, port=port, log_level="warning")
+
+
+@_command()
 def schema(out: Optional[Path] = typer.Option(None, help="Write the JSON Schema to this file instead of printing it.")):
     """Print (or write) the JSON Schema of the spec."""
     from vidlabel_spec import json_schema, write_json_schema

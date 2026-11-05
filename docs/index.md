@@ -63,6 +63,7 @@ print(release.release_id, release.n_rows)
 | understand the model: columns, coordinates, rotation, tracks, status, releases | [Concepts](concepts.md) |
 | handle several crops of one video (main area plus a ticker, say) | [Views](views.md) |
 | store and use masks | [Masks](masks.md) |
+| browse, review and release from a web page instead of the command line | [Web interface](ui.md) |
 | feed a PyTorch (or any) training loop | [Training](training.md) |
 | import annotations from another tool, or export to another format | [Writing a converter](converters.md) |
 | look up a command or a function | [Command line](cli.md), [Python API](python-api.md) |

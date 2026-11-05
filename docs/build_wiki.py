@@ -34,6 +34,7 @@ SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
         ("masks.md", "Masks", "Masks"),
         ("releases.md", "Releases", "Releases"),
         ("validation.md", "Validation", "Validation"),
+        ("ui.md", "Web-Interface", "Web interface"),
         ("training.md", "Training", "Training"),
         ("converters.md", "Writing-a-Converter", "Writing a converter"),
     ]),
@@ -49,6 +50,7 @@ SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
         ("compatibility.md", "Compatibility-and-Versioning", "Compatibility and versioning"),
         ("limitations.md", "Limitations-and-Roadmap", "Limitations and roadmap"),
         ("security.md", "Security", "Security"),
+        ("ui-design.md", "UI-Design", "Web interface design"),
     ]),
     ("Project", [
         ("faq.md", "Troubleshooting-and-FAQ", "Troubleshooting and FAQ"),

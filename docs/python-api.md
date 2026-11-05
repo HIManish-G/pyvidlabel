@@ -137,6 +137,7 @@ derive_view_rows(
     labels: Sequence[str] | None = None,
     origins: Sequence[str] | None = None,
     statuses: Sequence[str] = ('unreviewed', 'approved'),
+    dry_run: bool = False,
 ) -> dict[str, Any]
 ```
 
@@ -147,7 +148,7 @@ copies only what is new. The originals stay. Rows that only partly overlap the r
 or mask would change it): they are counted in `skipped_partial`.
 
 Returns `copied`, `ids`, `already_derived`, and the skip counts `skipped_partial`, `skipped_outside`, `skipped_label`,
-`skipped_frames`. Whole-frame samples (no `view_id`) then see both the original and the copy: build whole-frame releases
+`skipped_frames`. With `dry_run=True` nothing is written and `copied` is how many rows would be. Whole-frame samples (no `view_id`) then see both the original and the copy: build whole-frame releases
 with `build(view_ids=[None])` to leave the copies out.
 
 #### `Dataset.frame_index`

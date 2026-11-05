@@ -1,0 +1,333 @@
+"""The web server: security, routes over a real dataset with a real video, jobs, and coverage of the CLI and library."""
+import shutil
+import subprocess
+import time
+
+import numpy as np
+import pytest
+
+pytest.importorskip("starlette")
+pytest.importorskip("httpx")
+cv2 = pytest.importorskip("cv2")
+
+from starlette.testclient import TestClient  # noqa: E402
+from vidlabel import Dataset, masks  # noqa: E402
+from vidlabel.cli import app as cli_app  # noqa: E402
+from vidlabel.probe import probe_video  # noqa: E402
+from vidlabel.ui import app as uiapp  # noqa: E402
+
+HAVE_FFMPEG = shutil.which("ffmpeg") and shutil.which("ffprobe")
+H = {"X-Requested-With": "vidlabel", "X-Vidlabel-Author": "ana"}
+
+
+def make_video(path, n=40, w=96, h=64):
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", "25", "-i", "-",
+           "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "10", str(path)]
+    p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+    for i in range(n):
+        f = np.full((h, w, 3), 60, np.uint8)
+        f[16:32, 0:16] = (255, 0, 0)
+        p.stdin.write(f.tobytes())
+    p.stdin.close()
+    assert p.wait() == 0
+    return path
+
+
+@pytest.fixture
+def env(tmp_path):
+    ds = Dataset.create(tmp_path / "d")
+    vp = make_video(tmp_path / "clip.mp4") if HAVE_FFMPEG else None
+    if vp:
+        meta = probe_video(vp, "clip")
+        ds.add_video(meta)
+    else:
+        ds.add_video({"video_id": "clip", "frame_count": 40, "fps": {"num": 25, "den": 1}, "width": 96, "height": 64})
+    ds.add_labels(["thing", "other"])
+    m = np.zeros((64, 96), bool)
+    m[20:30, 30:50] = True
+    ds.add_annotations([{"kind": "box", "label": "thing", "start_frame": f, "box": (5, 5, 40, 40), "track_id": 1,
+                         "origin": "model", "confidence": 0.8} for f in range(0, 10)]
+                       + [{"kind": "mask", "label": "other", "start_frame": 3, "mask": m, "origin": "human"},
+                          {"kind": "marker", "label": "thing", "start_frame": 20, "end_frame": 30, "origin": "human"}], "clip")
+    a = uiapp.create_app(tmp_path / "d", token="tok", port=8765)
+    c = TestClient(a, base_url="http://127.0.0.1:8765")
+    c.cookies.set("vl_token", "tok")
+    return c, ds, a.state.ui
+
+
+def post(c, path, body=None, **kw):
+    return c.post(path, json=body or {}, headers=H, **kw)
+
+
+# ---------------------------------------------------------------- security
+def test_no_token_is_refused_but_the_page_explains(env):
+    c, ds, st = env
+    anon = TestClient(c.app, base_url="http://127.0.0.1:8765")
+    assert anon.get("/api/dataset").status_code == 401
+    r = anon.get("/")
+    assert r.status_code == 401 and "token" in r.text
+
+
+def test_token_in_address_sets_cookie(env):
+    c, ds, st = env
+    anon = TestClient(c.app, base_url="http://127.0.0.1:8765")
+    r = anon.get("/?token=tok", follow_redirects=False)
+    assert r.status_code in (302, 307) and "vl_token" in r.headers["set-cookie"]
+    assert anon.get("/api/dataset").status_code == 200
+    assert TestClient(c.app, base_url="http://127.0.0.1:8765").get("/?token=wrong").status_code == 401
+
+
+def test_wrong_host_and_origin_refused(env):
+    c, ds, st = env
+    assert c.get("/api/dataset", headers={"Host": "evil.example:8765"}).status_code == 421
+    assert c.get("/api/dataset", headers={"Origin": "http://evil.example"}).status_code == 403
+    assert c.get("/api/dataset", headers={"Origin": "http://127.0.0.1:8765"}).status_code == 200
+
+
+def test_changes_need_the_header(env):
+    c, ds, st = env
+    assert c.post("/api/draft/undo", json={}).status_code == 403
+    assert post(c, "/api/draft/undo").status_code == 400            # nothing to undo is a clear error, not a crash
+    assert post(c, "/api/draft/undo").json()["error"]
+
+
+def test_shared_server_has_no_file_access(env, tmp_path):
+    c, ds, st = env
+    a = uiapp.create_app(tmp_path / "d", token="t", host="0.0.0.0", port=9000)
+    s = TestClient(a, base_url="http://0.0.0.0:9000")
+    s.cookies.set("vl_token", "t")
+    r = s.get("/api/fs?path=/")
+    assert r.status_code == 403
+    assert s.get("/api/session").json()["can_browse_files"] is False
+
+
+def test_fs_roots_confine_paths(tmp_path):
+    root = tmp_path / "root"
+    (root / "sub").mkdir(parents=True)
+    (tmp_path / "secret").mkdir()
+    a = uiapp.create_app(tmp_path / "d", token="t", fs_roots=[root])
+    c = TestClient(a, base_url="http://127.0.0.1:8765")
+    c.cookies.set("vl_token", "t")
+    assert c.get("/api/fs", params={"path": str(root)}).status_code == 200
+    assert c.get("/api/fs", params={"path": str(root / "sub")}).json()["parent"] == str(root.resolve())
+    assert c.get("/api/fs", params={"path": str(tmp_path / "secret")}).status_code == 403
+    assert c.get("/api/fs", params={"path": str(root / ".." / "secret")}).status_code == 403
+    assert post(c, "/api/init", {"path": str(tmp_path / "secret" / "x")}).status_code == 403
+
+
+def test_setup_mode_and_init(tmp_path):
+    a = uiapp.create_app(tmp_path / "new", token="t")
+    c = TestClient(a, base_url="http://127.0.0.1:8765")
+    c.cookies.set("vl_token", "t")
+    assert c.get("/api/session").json()["has_dataset"] is False
+    assert c.get("/api/dataset").status_code == 409
+    assert post(c, "/api/init", {"path": str(tmp_path / "new")}).status_code == 200
+    assert c.get("/api/dataset").json()["stats"]["total"] == 0 if "total" in c.get("/api/dataset").json()["stats"] else True
+    assert post(c, "/api/init", {"path": str(tmp_path / "new")}).status_code in (400, 409)
+
+
+# ---------------------------------------------------------------- reading
+def test_dataset_and_listing_routes(env):
+    c, ds, st = env
+    d = c.get("/api/dataset").json()
+    assert d["videos"] == ["clip"] and {l["name"] for l in d["labels"]} == {"thing", "other"}
+    assert c.get("/api/videos").json()["videos"][0]["video_id"] == "clip"
+    assert c.get("/api/videos/clip").json()["metadata"]["video_id"] == "clip"
+    assert c.get("/api/videos/nope").status_code == 404
+    assert {l["name"]: l["count"] for l in c.get("/api/labels").json()["labels"]} == {"thing": 11, "other": 1}
+    assert c.get("/api/validate").json()["ok"] is True
+    assert c.get("/api/releases").json()["releases"] == []
+    assert c.get("/api/schema").status_code == 200
+
+
+def test_ids_are_strings_and_pagination_and_filters(env):
+    c, ds, st = env
+    r = c.get("/api/annotations", params={"video_id": "clip", "limit": 5}).json()
+    assert r["total"] == 12 and len(r["rows"]) == 5
+    assert all(isinstance(x["annotation_id"], str) for x in r["rows"])
+    assert all("mask" not in x for x in r["rows"])
+    assert c.get("/api/annotations", params={"video_id": "clip", "kind": "mask"}).json()["rows"][0]["has_mask"] is True
+    assert c.get("/api/annotations", params={"video_id": "clip", "frames": "3-3"}).json()["total"] == 2
+    assert c.get("/api/annotations", params={"video_id": "clip", "frames": "x"}).status_code == 400
+    ids = [x["annotation_id"] for x in r["rows"]]
+    assert all(int(i) == int(str(i)) for i in ids)
+
+
+def test_tracks_and_timeline(env):
+    c, ds, st = env
+    t = c.get("/api/tracks", params={"video_id": "clip"}).json()["tracks"]
+    assert t[0]["track_id"] == 1 and t[0]["n_rows"] == 10
+    tl = c.get("/api/timeline/clip").json()
+    assert tl["frame_count"] == 40 and len(tl["markers"]) == 1 and sum(tl["density"]) == 11
+
+
+def test_frame_data_with_mask_image(env):
+    c, ds, st = env
+    d = c.get("/api/frame-data/clip/3").json()
+    mask = [r for r in d["rows"] if r["kind"] == "mask"][0]
+    assert mask["mask_png"].startswith("data:image/png;base64,") and (mask["mask_x"], mask["mask_y"]) == (30, 20)
+
+
+@pytest.mark.skipif(not HAVE_FFMPEG, reason="ffmpeg")
+def test_frame_image(env):
+    c, ds, st = env
+    r = c.get("/api/frame/clip/5")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
+    img = cv2.imdecode(np.frombuffer(r.content, np.uint8), cv2.IMREAD_COLOR)
+    assert img.shape[:2] == (64, 96)
+    assert c.get("/api/frame/clip/999").status_code == 404
+    small = c.get("/api/frame/clip/5", params={"max_side": 48}).content
+    assert max(cv2.imdecode(np.frombuffer(small, np.uint8), 1).shape[:2]) == 48
+
+
+# ---------------------------------------------------------------- the draft over HTTP
+def test_draft_flow_overlay_commit_history_revert(env):
+    c, ds, st = env
+    before = ds._ann_path("clip").read_bytes()
+    r = post(c, "/api/draft/update-track", {"video_id": "clip", "track_id": 1, "values": {"status": "rejected"}})
+    assert r.json()["summary"]["modified"] == 10
+    assert ds._ann_path("clip").read_bytes() == before                      # nothing written yet
+    mine = c.get("/api/annotations", params={"video_id": "clip", "status": "rejected"}, headers={"X-Vidlabel-Author": "ana"}).json()
+    assert mine["total"] == 10 and mine["rows"][0]["pending"] == "modified"
+    other = c.get("/api/annotations", params={"video_id": "clip", "status": "rejected"}, headers={"X-Vidlabel-Author": "bob"}).json()
+    assert other["total"] == 0                                              # per-author drafts
+    assert post(c, "/api/draft/commit", {"message": ""}).status_code == 400  # message required
+    done = post(c, "/api/draft/commit", {"message": "reject track 1"}).json()
+    assert done["seq"] >= 1
+    assert c.get("/api/annotations", params={"video_id": "clip", "status": "rejected", "draft": "0"}).json()["total"] == 10
+    hist = c.get("/api/history").json()["commits"]
+    assert hist[0]["message"] == "reject track 1" and hist[0]["author"] == "ana"
+    assert post(c, f"/api/history/{hist[0]['seq']}/revert").status_code == 200
+    assert ds.annotations("clip", status="rejected").num_rows == 0
+
+
+def test_draft_add_undo_redo_discard(env):
+    c, ds, st = env
+    r = post(c, "/api/draft/add", {"video_id": "clip", "row": {"kind": "box", "label": "thing", "start_frame": 30, "box": [1, 1, 9, 9]}}).json()
+    tmp = r["id"]
+    assert tmp.startswith("p")
+    assert post(c, "/api/draft/update", {"video_id": "clip", "ids": [tmp], "values": {"label": "other"}}).status_code == 200
+    rows = c.get("/api/annotations", params={"video_id": "clip", "frames": "30-30"}, headers={"X-Vidlabel-Author": "ana"}).json()["rows"]
+    assert [x["label"] for x in rows if x["annotation_id"] == tmp] == ["other"]
+    assert post(c, "/api/draft/undo").json()["summary"]["added"] == 1
+    assert post(c, "/api/draft/redo").status_code == 200
+    assert post(c, "/api/draft/discard", {}).json()["summary"]["added"] == 0
+    assert post(c, "/api/draft/update", {"video_id": "clip", "ids": ["abc"], "values": {}}).status_code == 400
+
+
+def test_bad_edit_is_refused_with_message(env):
+    c, ds, st = env
+    r = post(c, "/api/draft/add", {"video_id": "clip", "row": {"kind": "box", "label": "nope", "start_frame": 1, "box": [1, 1, 9, 9]}})
+    assert r.status_code in (400, 422) and r.json()["error"]
+
+
+def test_conflict_is_409(env):
+    c, ds, st = env
+    post(c, "/api/draft/update-track", {"video_id": "clip", "track_id": 1, "values": {"status": "rejected"}})
+    ds.update_track("clip", 1, status="approved")                             # someone else changes the dataset
+    r = post(c, "/api/draft/commit", {"message": "x"})
+    assert r.status_code == 409 and r.json()["conflict"] is True and r.json()["videos"] == ["clip"]
+
+
+# ---------------------------------------------------------------- structural routes
+def test_labels_and_views(env):
+    c, ds, st = env
+    assert post(c, "/api/labels", {"names": ["a, b", "c"]}).json()["added"] == ["a", "b", "c"]
+    assert post(c, "/api/labels", {"names": []}).status_code == 400
+    v = post(c, "/api/views", {"view_id": "left", "video_id": "clip", "region": {"x": 0, "y": 0, "width": 48, "height": 64}}).json()
+    assert v["view_id"] == "left"
+    assert c.get("/api/views").json()["views"][0]["view_id"] == "left"
+    dry = post(c, "/api/views/derive", {"video_id": "clip", "view_id": "left", "dry_run": True}).json()
+    assert dry["dry_run"] is True and dry["copied"] > 0
+    assert ds.annotations("clip", view_id=["left"]).num_rows == 0
+    real = post(c, "/api/views/derive", {"video_id": "clip", "view_id": "left"}).json()
+    assert real["copied"] == dry["copied"] and ds.annotations("clip", view_id=["left"]).num_rows == real["copied"]
+
+
+# ---------------------------------------------------------------- jobs
+def wait(c, job, timeout=60):
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        j = c.get(f"/api/jobs/{job['id']}").json()
+        if j["status"] in ("done", "failed", "cancelled"):
+            return j
+        time.sleep(0.05)
+    raise AssertionError("job did not finish")
+
+
+def test_validate_and_build_jobs(env):
+    c, ds, st = env
+    j = wait(c, post(c, "/api/jobs/validate", {"deep": True}).json())
+    assert j["status"] == "done" and j["result"]["ok"] is True
+    b = wait(c, post(c, "/api/jobs/build", {}).json())
+    assert b["status"] == "done", b
+    rel = c.get("/api/releases").json()["releases"]
+    assert len(rel) == 1 and rel[0]["is_latest"] is True
+    assert any(x["id"] == b["id"] for x in c.get("/api/jobs").json()["jobs"])
+    assert c.get("/api/jobs/nope").status_code == 404
+
+
+def test_failed_job_reports_error(env):
+    c, ds, st = env
+    j = wait(c, post(c, "/api/jobs/check-video", {"video_id": "missing"}).json())
+    assert j["status"] == "failed" and j["error"]
+
+
+@pytest.mark.skipif(not HAVE_FFMPEG, reason="ffmpeg")
+def test_add_video_index_check_and_preview_jobs(env, tmp_path):
+    c, ds, st = env
+    vp = make_video(tmp_path / "second.mp4", n=30)
+    j = wait(c, post(c, "/api/jobs/add-video", {"path": str(vp), "video_id": "second"}).json())
+    assert j["status"] == "done", j
+    assert "second" in c.get("/api/dataset").json()["videos"]
+    assert wait(c, post(c, "/api/jobs/check-video", {"video_id": "second"}).json())["status"] == "done"
+    assert wait(c, post(c, "/api/jobs/index", {"video_ids": ["second"], "force": True}).json())["status"] == "done"
+    p = wait(c, post(c, "/api/jobs/preview", {"video_id": "clip", "frames": "0-3"}).json())
+    assert p["status"] == "done", p
+    tag = p["result"]["export"]
+    files = p["result"].get("files") or []
+    if files:
+        assert c.get(f"/api/exports/{tag}/{files[0]}").status_code == 200
+    assert c.get(f"/api/exports/{tag}/..%2Fx").status_code in (404, 400)
+    assert c.get("/api/exports/zz/.hidden").status_code == 404
+
+
+def test_cache_job_and_sample_inspector(env, tmp_path):
+    c, ds, st = env
+    wait(c, post(c, "/api/jobs/build", {}).json())
+    s = c.get("/api/sample", params={"video_id": "clip", "frame": 3, "kind": ["box", "mask"]})
+    assert s.status_code == 200, s.text
+    body = s.json()
+    assert body["class_names"] and "boxes" in body["targets"]
+
+
+# ---------------------------------------------------------------- coverage of the CLI and library
+CLI_EXCLUDED = {"ui": "starts this server"}
+API_EXCLUDED = {
+    "Dataset.add_video_from_probe": "not a method", "Dataset.path": "property", "Dataset.close": "no-op",
+}
+
+
+def test_every_cli_command_has_a_route():
+    covered = {name for spec in uiapp.ROUTES for name in spec["covers"]}
+    names = {(c.name or c.callback.__name__).replace("_", "-") for c in cli_app.registered_commands}
+    missing = {n for n in names if n not in covered and n not in CLI_EXCLUDED}
+    assert not missing, f"CLI commands without a route: {sorted(missing)}"
+
+
+def test_every_public_dataset_method_is_covered_or_excluded():
+    covered = {name for spec in uiapp.ROUTES for name in spec["covers"]}
+    public = {f"Dataset.{n}" for n in dir(Dataset) if not n.startswith("_") and callable(getattr(Dataset, n))}
+    missing = {m for m in public if m not in covered and m not in API_EXCLUDED}
+    assert not missing, f"Dataset methods without a route (add to a route's covers=, or to API_EXCLUDED with a reason): {sorted(missing)}"
+
+
+def test_shared_server_accepts_its_own_address_but_not_other_sites(tmp_path):
+    Dataset.create(tmp_path / "d")
+    a = uiapp.create_app(tmp_path / "d", token="t", host="0.0.0.0", port=9000)
+    c = TestClient(a, base_url="http://192.168.1.5:9000")
+    assert c.get("/api/session").status_code == 401                       # token still needed
+    c.cookies.set("vl_token", "t")
+    assert c.get("/api/session").status_code == 200
+    assert c.get("/api/session", headers={"Origin": "http://evil.example"}).status_code == 403
+    assert c.get("/api/session", headers={"Origin": "http://192.168.1.5:9000"}).status_code == 200

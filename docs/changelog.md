@@ -13,6 +13,9 @@ Nothing has been published to PyPI yet, so versions below are internal milestone
 - Video and view ids cannot be `.` or `..`, and the manifest's video and view lists are checked the same way (`bad_manifest`).
 
 **Library**
+- Web interface, stage 1: `vidlabel ui PATH` (extra `vidlabel[ui]`). Local server with a token, a per-author draft with undo, redo and an
+  all-or-nothing commit, history with revert (last 50), background jobs with progress, and pages for overview, videos, viewer, track review,
+  validation, releases and history. See [Web interface](ui.md). `Dataset.derive_view_rows(dry_run=True)` reports what would be copied.
 - Review by track: `Dataset.tracks()`, `update_track()`, `delete_track()`, a `track_id` filter on `annotations()`; commands
   `vidlabel tracks` and `vidlabel review --track`.
 - `Dataset.derive_view_rows()` and `vidlabel derive-view` copy whole-frame labels into a view.

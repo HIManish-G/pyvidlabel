@@ -50,3 +50,16 @@ you do not want to disclose. The video content itself is not in the dataset.
 
 Do not post a vulnerability in a public issue. Use GitHub's private vulnerability reporting for the repository (Security tab), or the
 contact in the repository's security policy once one is added.
+
+## The web interface
+
+`vidlabel ui` starts a local server that can change your dataset, so it is protected against other web pages and other computers:
+
+- it listens on `127.0.0.1` unless you pass `--host`;
+- every request needs a random access token (a cookie set when you open the printed address, or the `X-Vidlabel-Token` header);
+- on a local server the `Host` header must be this server and the `Origin` header, when present, must be this page, which stops DNS rebinding and other sites' requests;
+- every request that changes something must carry `X-Requested-With: vidlabel`, which a cross-site form cannot send;
+- file paths the page names must be inside `--fs-root` folders when given; a server shared on the network refuses file access unless a folder is given.
+
+What it does not do: encrypt traffic (it is plain HTTP, so do not expose it to the internet; use an SSH tunnel or a VPN), tell people apart
+(the name is not a login), or stop someone who has the token from editing. Treat the printed address like a password.
