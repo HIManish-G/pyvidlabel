@@ -360,3 +360,77 @@ def test_quoted_paths_and_file_paths_in_the_picker(env, tmp_path):
     given_file = c.get("/api/fs", params={"path": str(f)}).json()          # a file shows the folder it is in
     assert given_file["path"] == str(folder.resolve())
     assert c.get("/api/fs", params={"path": str(folder / "missing")}).status_code == 404
+
+
+# ---------------------------------------------------------------- drawing: boxes, spans and masks through the draft
+def _bits(mask):
+    return uiapp.mask_to_bits(mask)
+
+
+def test_mask_bits_round_trip():
+    m = np.zeros((7, 13), bool)
+    m[2:5, 3:9] = True
+    assert (uiapp.bits_to_mask(_bits(m)) == m).all()
+    with pytest.raises(ValueError):
+        uiapp.bits_to_mask({"width": 3, "height": 3, "data": "AA=="}, None)
+    with pytest.raises(ValueError):
+        uiapp.bits_to_mask(_bits(m), (14, 7))
+
+
+def test_draw_box_span_and_mask_then_commit_and_revert(env):
+    c, ds, st = env
+    n0 = ds.annotations("clip").num_rows
+    box = post(c, "/api/draft/add", {"video_id": "clip", "row": {"kind": "box", "label": "other", "start_frame": 12, "box": [10, 8, 60, 50], "track_id": 9}})
+    assert box.status_code == 200, box.text
+    span = post(c, "/api/draft/add", {"video_id": "clip", "row": {"kind": "marker", "label": "thing", "start_frame": 5, "end_frame": 8}})
+    assert span.status_code == 200, span.text
+    m = np.zeros((64, 96), bool)
+    m[10:30, 40:70] = True
+    mk = post(c, "/api/draft/add", {"video_id": "clip", "row": {"kind": "mask", "label": "thing", "start_frame": 15, "mask_bits": _bits(m)}})
+    assert mk.status_code == 200, mk.text
+    shown = c.get("/api/frame-data/clip/15", headers={"X-Vidlabel-Author": "ana"}).json()["rows"]
+    mrow = [r for r in shown if r["kind"] == "mask"][0]
+    assert mrow["pending"] == "added" and (mrow["x0"], mrow["y0"], mrow["x1"], mrow["y1"]) == (40, 10, 70, 30) and mrow["mask_png"]
+    got = c.get(f"/api/mask-bits/clip/{mk.json()['id']}", params={"frame": 15}, headers={"X-Vidlabel-Author": "ana"}).json()
+    assert (uiapp.bits_to_mask(got) == m).all()                   # a pending mask can be loaded for editing
+    # change the mask's shape: the box follows it, in one edit
+    m2 = m.copy()
+    m2[10:20, 40:50] = False
+    m2[40:50, 5:20] = True
+    assert post(c, "/api/draft/update", {"video_id": "clip", "ids": [mk.json()["id"]], "values": {"mask_bits": _bits(m2)}}).status_code == 200
+    # the box can be moved and the span's frames changed
+    assert post(c, "/api/draft/update", {"video_id": "clip", "ids": [box.json()["id"]], "values": {"box": [12, 10, 62, 52]}}).status_code == 200
+    assert post(c, "/api/draft/update", {"video_id": "clip", "ids": [span.json()["id"]], "values": {"start_frame": 4, "end_frame": 9}}).status_code == 200
+    done = post(c, "/api/draft/commit", {"message": "draw things"})
+    assert done.status_code == 200, done.text
+    assert ds.annotations("clip").num_rows == n0 + 3
+    t = ds.annotations("clip", frames=(15, 15), kind="mask", label="thing")
+    assert t.num_rows == 1 and (masks.decode(t.column("mask")[0].as_py()) == m2).all()
+    assert [t.column(k)[0].as_py() for k in ("x0", "y0", "x1", "y1")] == [5, 10, 70, 50]
+    assert ds.annotations("clip", kind="marker", label="thing", frames=(4, 4)).num_rows >= 1
+    assert post(c, f"/api/history/{done.json()['seq']}/revert").status_code == 200
+    assert ds.annotations("clip").num_rows == n0
+
+
+def test_editing_a_committed_mask_and_reverting_restores_it(env):
+    c, ds, st = env
+    old = ds.annotations("clip", kind="mask")
+    aid = old.column("annotation_id")[0].as_py()
+    before = masks.decode(old.column("mask")[0].as_py())
+    m = np.zeros((64, 96), bool)
+    m[5:15, 5:15] = True
+    r = post(c, "/api/draft/update", {"video_id": "clip", "ids": [str(aid)], "values": {"mask_bits": _bits(m)}})
+    assert r.status_code == 200, r.text
+    done = post(c, "/api/draft/commit", {"message": "reshape mask"}).json()
+    assert (masks.decode(ds.annotations("clip", kind="mask").column("mask")[0].as_py()) == m).all()
+    assert post(c, f"/api/history/{done['seq']}/revert").status_code == 200
+    assert (masks.decode(ds.annotations("clip", kind="mask").column("mask")[0].as_py()) == before).all()
+
+
+def test_wrong_size_or_empty_mask_is_refused(env):
+    c, ds, st = env
+    bad = post(c, "/api/draft/add", {"video_id": "clip", "row": {"kind": "mask", "label": "thing", "start_frame": 1, "mask_bits": _bits(np.ones((10, 10), bool))}})
+    assert bad.status_code == 400 and "96" in bad.json()["error"]
+    aid = ds.annotations("clip", kind="mask").column("annotation_id")[0].as_py()
+    empty = post(c, "/api/draft/update", {"video_id": "clip", "ids": [str(aid)], "values": {"mask_bits": _bits(np.zeros((64, 96), bool))}})
+    assert empty.status_code == 400 and "empty" in empty.json()["error"]

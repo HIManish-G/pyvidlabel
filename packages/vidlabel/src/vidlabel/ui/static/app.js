@@ -487,31 +487,36 @@ async function pageViewer(main, parts, q, alive) {
   const m = meta.metadata, fps = m.fps.num / m.fps.den;
   V = { vid, n: Math.max(0, Math.min(+q.f || 0, m.frame_count - 1)), frames: m.frame_count, view: q.view || "", playing: false, rows: [], sel: null,
         boxes: true, masks: true, img: null, size: [m.width, m.height], fps, found: meta.file_found, req: 0, tl: null, timer: null, maskImgs: new Map() };
-  const canvas = h("canvas", { width: m.width, height: m.height });
+  const canvas = h("canvas", { width: m.width, height: m.height }), ov = h("canvas", { class: "ov", width: m.width, height: m.height, "aria-label": "Frame: draw and edit annotations here" });
+  const layers = h("div", { class: "layers" }, canvas, ov);
   const tlc = h("canvas", { height: 64 });
   const slider = h("input", { type: "range", min: 0, max: m.frame_count - 1, value: V.n, style: "flex:1" });
   const info = h("span", { class: "mono" });
   const side = h("div", { class: "side" });
   const playBtn = h("button", { onclick: () => togglePlay() }, "▶ Play");
-  V.el = { canvas, tlc, slider, info, side, playBtn };
-  const viewSel = h("select", { onchange: e => { V.view = e.target.value; V.maskImgs.clear(); loadTimeline().then(() => show(V.n)); } },
+  V.el = { canvas, ov, layers, tlc, slider, info, side, playBtn };
+  drawInit();
+  const viewSel = h("select", { onchange: e => { V.view = e.target.value; V.maskImgs.clear(); if (V.view) { V.work = null; V.tool = "select"; } paintToolbar(); loadTimeline().then(() => show(V.n)); } },
     h("option", { value: "" }, "Whole frame"), views.map(v => h("option", { value: v.view_id, selected: v.view_id === V.view }, "View: " + v.view_id)));
+  const tools = toolbarEl();
   main.className = "full";
   main.replaceChildren(h("div", { class: "viewer" },
     h("div", { class: "bar-top row" }, h("b", {}, vid), h("span", { class: "muted" }, `${m.width}×${m.height} · ${fmt(m.frame_count)} frames · ${fps.toFixed(2)} fps`), viewSel,
       h("label", { class: "row tight" }, h("input", { type: "checkbox", checked: true, onchange: e => { V.boxes = e.target.checked; draw(); } }), "boxes"),
       h("label", { class: "row tight" }, h("input", { type: "checkbox", checked: true, onchange: e => { V.masks = e.target.checked; draw(); } }), "masks"),
-      h("span", { class: "spacer" }), h("a", { href: "#/review/" + encodeURIComponent(vid) }, "Review tracks →")),
-    h("div", { class: "stage" }, canvas),
+      h("span", { class: "spacer" }), h("a", { href: "#/review/" + encodeURIComponent(vid) }, "Review tracks →"),
+      h("div", { class: "toolrow" }, tools)),
+    h("div", { class: "stage" }, layers),
     side,
     h("div", { class: "transport" }, tlc, h("div", { class: "row", style: "margin-top:6px" }, playBtn,
       h("button", { onclick: () => seek(V.n - 1) }, "◀"), h("button", { onclick: () => seek(V.n + 1) }, "▶"), slider, info))));
-  if (!meta.file_found) side.append(h("div", { class: "notice warn" }, "The video file was not found on this computer, so frames are shown as a grey placeholder. The annotations are still shown and can be reviewed."));
+  if (!meta.file_found) side.append(h("div", { class: "notice warn keep" }, "The video file was not found on this computer, so frames are shown as a grey placeholder. The annotations are still shown and can be reviewed."));
   slider.addEventListener("input", () => seek(+slider.value));
-  tlc.addEventListener("pointerdown", e => { const f = tlFrame(e); seek(f); const mv = ev => seek(tlFrame(ev)); const up = () => { removeEventListener("pointermove", mv); removeEventListener("pointerup", up); }; addEventListener("pointermove", mv); addEventListener("pointerup", up); });
-  canvas.addEventListener("click", ev => pickAt(ev));
+  tlc.addEventListener("pointerdown", e => { if (V.tool === "span" && canDraw()) return spanStart(e); const f = tlFrame(e); seek(f); const mv = ev => seek(tlFrame(ev)); const up = () => { removeEventListener("pointermove", mv); removeEventListener("pointerup", up); }; addEventListener("pointermove", mv); addEventListener("pointerup", up); });
+  bindDrawing(ov);
   V.onkey = ev => {
     if (/input|textarea|select/i.test(ev.target.tagName)) return;
+    if (drawKey(ev)) { ev.preventDefault(); return; }
     const k = ev.key;
     if (k === "ArrowRight") seek(V.n + (ev.shiftKey ? 10 : 1)); else if (k === "ArrowLeft") seek(V.n - (ev.shiftKey ? 10 : 1));
     else if (k === " ") togglePlay(); else if (k === "Home") seek(0); else if (k === "End") seek(V.frames - 1);
@@ -522,7 +527,7 @@ async function pageViewer(main, parts, q, alive) {
   };
   document.addEventListener("keydown", V.onkey);
   new ResizeObserver(() => { if (V) { drawTimeline(); fitCanvas(); } }).observe(tlc);
-  new ResizeObserver(() => { if (V) fitCanvas(); }).observe(canvas.parentElement);
+  new ResizeObserver(() => { if (V) fitCanvas(); }).observe(layers.parentElement);
   await loadTimeline();
   await show(V.n);
 }
@@ -562,13 +567,14 @@ function draw() {
   const v = V, c = v.el.canvas, ctx = c.getContext("2d");
   const [w, hh] = v.size;
   if (c.width !== w || c.height !== hh) { c.width = w; c.height = hh; }
+  if (v.el.ov.width !== w || v.el.ov.height !== hh) { v.el.ov.width = w; v.el.ov.height = hh; }
   if (v.img) ctx.drawImage(v.img, 0, 0, w, hh);
   else { ctx.fillStyle = "#2a3140"; ctx.fillRect(0, 0, w, hh); ctx.fillStyle = "#8a94a6"; ctx.font = `${Math.max(12, w / 40)}px sans-serif`; ctx.fillText(v.found ? "frame could not be read" : "video file not found", 12, 24); }
   fitCanvas();
   const lw = Math.max(2, w / 360);
   for (const r of v.rows) {
     const col = labelColor(r.label), deleted = r.pending === "deleted", sel = r.annotation_id === v.sel;
-    if (r.kind === "mask" && v.masks && r._img) {
+    if (r.kind === "mask" && v.masks && r._img && !(v.work && v.work.target === r.annotation_id)) {
       const off = document.createElement("canvas"); off.width = r._img.width; off.height = r._img.height;
       const oc = off.getContext("2d"); oc.drawImage(r._img, 0, 0); oc.globalCompositeOperation = "source-in"; oc.fillStyle = col; oc.fillRect(0, 0, off.width, off.height);
       ctx.globalAlpha = deleted ? 0.15 : sel ? 0.7 : 0.45; ctx.drawImage(off, r.mask_x, r.mask_y); ctx.globalAlpha = 1;
@@ -582,21 +588,18 @@ function draw() {
       ctx.fillStyle = col; ctx.fillRect(r.x0, Math.max(0, r.y0 - th), tw, th); ctx.fillStyle = "#fff"; ctx.fillText(text, r.x0 + 3, Math.max(th - 4, r.y0 - 4));
     }
   }
+  if (v.work) { ctx.globalAlpha = .55; ctx.drawImage(v.work.tint, 0, 0); ctx.globalAlpha = 1; }
   V.el.info.textContent = `frame ${V.n} / ${V.frames - 1}  ·  ${(V.n / V.fps).toFixed(2)} s`;
+  drawOverlay();
 }
 function fitCanvas() {
-  const c = V.el.canvas, st = c.parentElement, s = Math.min(st.clientWidth / c.width, st.clientHeight / c.height);
-  if (s > 0 && isFinite(s)) { c.style.width = Math.floor(c.width * s) + "px"; c.style.height = Math.floor(c.height * s) + "px"; }
-}
-function pickAt(ev) {
-  const c = V.el.canvas, r = c.getBoundingClientRect(), x = (ev.clientX - r.left) * c.width / r.width, y = (ev.clientY - r.top) * c.height / r.height;
-  const hits = V.rows.filter(a => a.x0 != null && x >= a.x0 && x <= a.x1 && y >= a.y0 && y <= a.y1).sort((a, b) => (a.x1 - a.x0) * (a.y1 - a.y0) - (b.x1 - b.x0) * (b.y1 - b.y0));
-  V.sel = hits.length ? hits[0].annotation_id : null; draw(); drawSide();
+  const c = V.el.canvas, box = V.el.layers, st = box.parentElement, s = Math.min(st.clientWidth / c.width, st.clientHeight / c.height);
+  if (s > 0 && isFinite(s)) { box.style.width = Math.floor(c.width * s) + "px"; box.style.height = Math.floor(c.height * s) + "px"; }
 }
 function drawSide() {
-  const side = V.el.side, keep = side.querySelector(".notice");
-  side.replaceChildren(keep || "", h("h2", {}, `On this frame (${V.rows.length})`));
-  if (!V.rows.length) side.append(h("div", { class: "empty" }, "Nothing annotated on this frame."));
+  const side = V.el.side, keep = side.querySelector(".notice.keep");
+  side.replaceChildren(keep || "", drawPanel(), h("h2", {}, `On this frame (${V.rows.length})`));
+  if (!V.rows.length) side.append(h("div", { class: "empty" }, "Nothing annotated on this frame. Pick a tool above to draw."));
   for (const r of V.rows) {
     const id = r.annotation_id, vid = V.vid;
     side.append(h("div", { class: "annrow" + (id === V.sel ? " sel" : "") + (r.pending ? " pend" : "") + (r.pending === "deleted" ? " deleted" : ""), onclick: () => { V.sel = id; draw(); drawSide(); } },
@@ -608,12 +611,13 @@ function drawSide() {
         h("button", { class: "small bad", onclick: async e => { e.stopPropagation(); await setStatus(vid, [id], "rejected"); show(V.n); loadTimeline(); } }, "Reject"),
         h("button", { class: "small", title: "Delete this row (still undoable until you commit)", onclick: async e => { e.stopPropagation(); await draftOp("/api/draft/delete", { video_id: vid, ids: [id] }); show(V.n); loadTimeline(); } }, "Delete"))));
   }
+  side.append(selectionPanel());
   side.append(h("p", { class: "muted", style: "margin-top:12px" }, h("span", { class: "kbd" }, "←"), " ", h("span", { class: "kbd" }, "→"), " step · ",
-    h("span", { class: "kbd" }, "Shift"), " 10 frames · ", h("span", { class: "kbd" }, "Space"), " play · ", h("span", { class: "kbd" }, "Ctrl+Z"), " undo"));
+    h("span", { class: "kbd" }, "Shift"), " 10 frames · ", h("span", { class: "kbd" }, "Space"), " play · ", h("span", { class: "kbd" }, "Ctrl+Z"), " undo · ", h("span", { class: "kbd" }, "V B S M E P"), " tools"));
 }
 async function loadTimeline() {
   V.tl = await GET("/api/timeline/" + encodeURIComponent(V.vid), { view_id: V.view });
-  drawTimeline();
+  drawTimeline(); paintToolbar();
 }
 function drawTimeline() {
   if (!V || !V.tl) return;
@@ -632,6 +636,7 @@ function drawTimeline() {
     ctx.fillRect(x(mk.start_frame), 44, Math.max(2, x(mk.end_frame) - x(mk.start_frame)), 8);
     if (mk.pending) { ctx.strokeStyle = pend; ctx.lineWidth = 1.5; ctx.strokeRect(x(mk.start_frame), 44, Math.max(2, x(mk.end_frame) - x(mk.start_frame)), 8); }
   }
+  if (V.spanDrag) { const lo = Math.min(V.spanDrag.a, V.spanDrag.b), hi = Math.max(V.spanDrag.a, V.spanDrag.b); ctx.fillStyle = pend; ctx.globalAlpha = .35; ctx.fillRect(x(lo), 0, Math.max(3, x(hi) - x(lo)), hh); ctx.globalAlpha = 1; }
   ctx.fillStyle = cs.getPropertyValue("--ink").trim(); ctx.fillRect(Math.round(x(V.n)) - 1, 0, 2, hh);
 }
 

@@ -209,3 +209,146 @@ def test_file_picker_lists_folders_and_videos_and_accepts_quoted_paths(page):
     pg.click(".modal button:has-text('Use this file')")
     assert pg.input_value("input[placeholder='path to a video file']").endswith("clip.mp4")
     assert not pg.errors
+
+
+# ---------------------------------------------------------------- drawing tools
+def _viewer(pg, base, frame):
+    pg.goto(f"{base}/#/video/clip?f={frame}")
+    pg.reload()
+    pg.wait_for_selector("canvas.ov")
+    pg.wait_for_function("document.body.innerText.includes('frame %d /')" % frame)
+
+
+def _ov(pg):
+    b = pg.locator("canvas.ov").bounding_box()
+    return lambda fx, fy: (b["x"] + b["width"] * fx, b["y"] + b["height"] * fy)
+
+
+def _draft_count(pg):
+    return int(pg.inner_text("#changes-count"))
+
+
+def _commit(pg, message):
+    pg.click("#commit-btn")
+    pg.fill("#drawer textarea", message)
+    pg.click("#drawer button:has-text('Commit to dataset')")
+    pg.wait_for_selector(".toast:has-text('Committed')")
+
+
+def test_draw_move_and_resize_a_box_then_commit(page):
+    pg, ds, base = page
+    _viewer(pg, base, 45)                                     # a frame with no boxes yet
+    before = ds.annotations("clip", frames=(45, 45), kind="box").num_rows
+    at = _ov(pg)
+    pg.keyboard.press("b")
+    pg.mouse.move(*at(0.10, 0.10))
+    pg.mouse.down()
+    pg.mouse.move(*at(0.30, 0.30), steps=4)
+    pg.mouse.move(*at(0.50, 0.50), steps=4)
+    pg.mouse.up()
+    pg.wait_for_function("document.querySelector('#changes-count').textContent === '1'")
+    assert ds.annotations("clip", frames=(45, 45), kind="box").num_rows == before          # a draft changes nothing
+    pg.wait_for_selector(".annrow.pend")
+    pg.keyboard.press("v")
+    pg.mouse.move(*at(0.30, 0.30))                            # inside the new box: drag it right by 20% of the width
+    pg.mouse.down()
+    pg.mouse.move(*at(0.40, 0.30), steps=4)
+    pg.mouse.move(*at(0.50, 0.30), steps=4)
+    pg.mouse.up()
+    pg.wait_for_function("V.rows.some(r => r.pending === 'added' && r.x0 > 25)")          # the page has the moved box
+    pg.mouse.move(*at(0.70, 0.50))                            # the bottom-right corner handle of the moved box: pull it out to 90%
+    pg.mouse.down()
+    pg.mouse.move(*at(0.80, 0.50), steps=4)
+    pg.mouse.move(*at(0.90, 0.50), steps=4)
+    pg.mouse.up()
+    pg.wait_for_function("V.rows.some(r => r.pending === 'added' && r.x1 > 80)")
+    _commit(pg, "draw one box")
+    t = ds.annotations("clip", frames=(45, 45), kind="box")
+    assert t.num_rows == before + 1
+    row = [r for r in t.to_pylist() if r["track_id"] is None][0]
+    assert abs(row["x0"] - 96 * 0.30) < 2.5 and abs(row["y0"] - 64 * 0.10) < 2.5 and abs(row["y1"] - 64 * 0.50) < 2.5
+    assert abs(row["x1"] - 96 * 0.90) < 2.5                    # moved right 20%, then its right edge pulled out
+    assert row["origin"] == "human" and row["status"] == "unreviewed"
+
+
+def test_label_a_span_on_the_timeline(page):
+    pg, ds, base = page
+    _viewer(pg, base, 2)
+    before = ds.annotations("clip", kind="marker").num_rows
+    pg.keyboard.press("s")
+    b = pg.locator(".transport canvas").bounding_box()
+    pg.mouse.move(b["x"] + b["width"] * 0.50, b["y"] + 30)
+    pg.mouse.down()
+    pg.mouse.move(b["x"] + b["width"] * 0.65, b["y"] + 30, steps=5)
+    pg.mouse.move(b["x"] + b["width"] * 0.80, b["y"] + 30, steps=5)
+    pg.mouse.up()
+    pg.wait_for_selector(".toast:has-text('Labelled frames')")
+    _commit(pg, "label a span")
+    t = ds.annotations("clip", kind="marker")
+    assert t.num_rows == before + 1
+    new = [r for r in t.to_pylist() if r["start_frame"] > 20 and r["end_frame"] < 56 and r["end_frame"] - r["start_frame"] > 10]
+    assert new and abs(new[-1]["start_frame"] - 59 * 0.50) < 3 and abs(new[-1]["end_frame"] - 59 * 0.80) < 3
+
+
+def test_paint_polygon_erase_and_reshape_a_mask(page):
+    pg, ds, base = page
+    from vidlabel import masks
+    _viewer(pg, base, 50)
+    before = ds.annotations("clip", frames=(50, 50), kind="mask").num_rows
+    at = _ov(pg)
+    pg.keyboard.press("m")                                    # brush: a thick stroke
+    pg.evaluate("V.brush = 6")
+    pg.mouse.move(*at(0.20, 0.50))
+    pg.mouse.down()
+    pg.mouse.move(*at(0.40, 0.50), steps=6)
+    pg.mouse.move(*at(0.60, 0.50), steps=6)
+    pg.mouse.up()
+    pg.keyboard.press("p")                                    # polygon: a triangle below it, closed with Enter
+    for fx, fy in ((0.30, 0.70), (0.50, 0.70), (0.40, 0.90)):
+        pg.mouse.click(*at(fx, fy))
+    pg.keyboard.press("Enter")
+    pg.click("button:has-text('Save mask')")
+    pg.wait_for_function("document.querySelector('#changes-count').textContent === '1'")
+    _commit(pg, "paint a mask")
+    t = ds.annotations("clip", frames=(50, 50), kind="mask")
+    assert t.num_rows == before + 1
+    m = [r for r in t.to_pylist() if r["track_id"] is None][0]
+    area1 = int(masks.decode(m["mask"]).sum())
+    assert area1 > 100 and m["x0"] < 96 * 0.25 and m["y1"] > 64 * 0.8
+    # select it, edit it, erase the left half of the stroke, apply
+    _viewer(pg, base, 50)
+    at = _ov(pg)
+    pg.mouse.click(*at(0.40, 0.50))
+    pg.click("button:has-text('Edit mask shape')")
+    pg.wait_for_selector(".notice:has-text('Editing a mask')")
+    pg.keyboard.press("e")
+    pg.evaluate("V.brush = 10")
+    pg.mouse.move(*at(0.12, 0.45))
+    pg.mouse.down()
+    pg.mouse.move(*at(0.30, 0.55), steps=6)
+    pg.mouse.move(*at(0.34, 0.60), steps=6)
+    pg.mouse.up()
+    pg.click("button:has-text('Apply to the mask')")
+    pg.wait_for_function("document.querySelector('#changes-count').textContent === '1'")
+    _commit(pg, "trim the mask")
+    m2 = [r for r in ds.annotations("clip", frames=(50, 50), kind="mask").to_pylist() if r["annotation_id"] == m["annotation_id"]][0]
+    assert int(masks.decode(m2["mask"]).sum()) < area1 and m2["x0"] > m["x0"]
+
+
+def test_drawing_is_off_inside_a_view(page):
+    pg, ds, base = page
+    pg.goto(f"{base}/#/video/clip?f=3&view=left_half")
+    pg.reload()
+    pg.wait_for_selector("canvas.ov")
+    assert pg.locator(".tools button:has-text('Box')").is_disabled()
+    assert pg.locator("text=Choose “Whole frame” to draw").count() == 1
+
+
+def test_mask_panel_is_shown_once(page):
+    pg, ds, base = page
+    _viewer(pg, base, 52)
+    pg.keyboard.press("m")
+    pg.keyboard.press("p")
+    pg.keyboard.press("b")
+    pg.keyboard.press("m")
+    assert pg.locator(".side .notice:has-text('New mask')").count() == 1

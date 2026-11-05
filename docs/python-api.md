@@ -219,6 +219,8 @@ update_annotations(
 
 Set columns (e.g. status='approved', label='x') on the given annotations. Returns rows changed. Ids that are not in
 this video raise KeyError (and nothing changes) unless `missing="ignore"`; giving no column to change is an error.
+`mask=` (a boolean array of the frame's size, or encoded bytes) replaces the mask of mask rows and sets their box from it;
+the result is checked like any write (box, size, kind), so a mask on a box row is refused.
 
 #### `Dataset.update_track`
 

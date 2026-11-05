@@ -117,3 +117,6 @@ body.drawer-open main:not(.full) { padding-right: 436px; } body.drawer-open .vie
 [hidden] { display: none !important; }
 .crop-wrap canvas { width: min(100%, 720px); height: auto; }
 .page input[type=text]:not(.wide) { max-width: 720px; }
+
+.layers { position: relative; } .layers canvas { display: block; width: 100%; height: 100%; } .layers canvas.ov { position: absolute; left: 0; top: 0; touch-action: none; }
+.toolrow { flex-basis: 100%; } .tools button.on { background: var(--ink); color: var(--paper); }

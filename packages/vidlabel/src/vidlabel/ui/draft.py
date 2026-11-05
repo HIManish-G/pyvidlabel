@@ -38,7 +38,7 @@ from ..validate import ValidationError, check_annotation_table, errors
 
 STATE_DIR = ".vidlabel-ui"
 HISTORY_LIMIT = 50
-_UPDATABLE = (set(COLUMN_NAMES) - _IMMUTABLE) | {"box"}
+_UPDATABLE = (set(COLUMN_NAMES) - _IMMUTABLE) | {"box", "mask"}
 _FILTERS = {"kind", "label", "origin", "status", "view_id", "track_id", "frames"}
 
 
@@ -94,6 +94,16 @@ def _library_row(row: Mapping[str, Any]) -> dict:
     return r
 
 
+def _library_values(values: Mapping[str, Any]) -> dict:
+    """Update values as `Dataset.update_annotations` takes them (a mask as bytes, not base64)."""
+    v = {k: x for k, x in values.items() if k != "mask_b64"}
+    if values.get("mask_b64"):
+        v["mask"] = base64.b64decode(values["mask_b64"])
+        for k in ("mask_codec", "x0", "y0", "x1", "y1"):          # the library sets these from the new mask
+            v.pop(k, None)
+    return v
+
+
 def _atomic_write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
@@ -119,6 +129,16 @@ def _clean_values(values: Mapping[str, Any]) -> dict:
                 if len(v) != 4:
                     raise DraftError("box must be (x0, y0, x1, y1)")
                 out.update(zip(("x0", "y0", "x1", "y1"), (float(x) for x in v)))
+            elif k == "mask":
+                if v is None:
+                    raise DraftError("a mask cannot be cleared; delete the row instead")
+                blob = bytes(v) if isinstance(v, (bytes, bytearray)) else _masks.encode(v)
+                box = _masks.bbox(blob)
+                if box is None:
+                    raise DraftError("the mask is empty; delete the row instead")
+                out["mask_b64"] = base64.b64encode(blob).decode("ascii")
+                out["mask_codec"] = _masks.CODEC
+                out.update(zip(("x0", "y0", "x1", "y1"), (float(x) for x in box)))     # the box follows the mask
             elif k == "status":
                 out[k] = _enum_value(v, Status, k)
             elif k == "kind":
@@ -279,7 +299,9 @@ class Draft:
         if "label" in vals and vals["label"] not in {l.name for l in self.ds.vocab.labels}:
             raise DraftError(f"label '{vals['label']}' is not in the vocabulary")
         ids = self._check_ids(video_id, ids)
-        what = ", ".join(f"{k} → {v}" for k, v in vals.items() if k not in ("x0", "y0", "x1", "y1")) or "geometry"
+        what = ", ".join(f"{k} → {v}" for k, v in vals.items() if k not in ("x0", "y0", "x1", "y1", "mask_codec", "mask_b64")) or "geometry"
+        if "mask_b64" in vals:
+            what = "mask shape" + (", " + what if what != "geometry" else "")
         return self._record({"op": "update", "video_id": video_id, "ids": ids, "values": vals,
                              "label": f"change {what} ({len(ids)} row{'s' if len(ids) != 1 else ''})"})
 
@@ -369,6 +391,8 @@ class Draft:
                 continue
             if i in st.upd:
                 r.update(st.upd[i])
+                if "mask_b64" in r:
+                    r["mask"] = base64.b64decode(r.pop("mask_b64"))
                 r["_pending"] = "modified"
             out.append(r)
         for tmp, raw in st.adds.items():
@@ -413,7 +437,7 @@ class Draft:
             st = self._state(vid)
             groups: dict[str, tuple[list[int], dict]] = {}
             for i, v in sorted(st.upd.items()):
-                groups.setdefault(json.dumps(v, sort_keys=True), ([], v))[0].append(i)
+                groups.setdefault(json.dumps(v, sort_keys=True), ([], _library_values(v)))[0].append(i)
             net = {"adds": [_library_row(r) for r in st.adds.values()], "updates": list(groups.values()),
                    "deletes": sorted(st.deleted)}
             if net["adds"] or net["updates"] or net["deletes"]:

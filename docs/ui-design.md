@@ -1,6 +1,6 @@
 # Design: the local web interface
 
-Status: **stages 1 and 2 are built** (server, draft and history, jobs, every route, and pages for browsing, review, validation, releases, history, videos, labels and views); stages 3 and 4 are
+Status: **stages 1 to 3 are built** (server, draft and history, jobs, every route, and pages for browsing, review, validation, releases, history, videos, labels and views); stage 4 (polish) is
 planned. This page is the plan the interface is built and tested against; the user guide is [Web interface](ui.md). If the behaviour here
 and the code ever disagree, one of them is a bug.
 
@@ -149,7 +149,7 @@ browser. The page is a client of this interface, so a script could use it too. T
 |---|---|
 | 1. server, draft, history, jobs, routes, tests; Overview, Videos, Viewer (read only plus approve, reject and delete of rows), Review, Validation, Releases, History, Changes panel | built |
 | 2. builder pages: Labels, Videos (add, check, index, folders for moved files, frame cache), Views (draw a region, create, copy labels in with a preview) | built |
-| 3. drawing: boxes and spans, then masks | not built |
+| 3. drawing: select, move and resize boxes, new boxes, spans on the timeline, masks with brush, eraser and polygon, editing an existing mask | built (whole frame only; views get rows through Copy labels in) |
 | 4. polish and the sample inspector page | the sample inspector is on the Releases page; the rest is not built |
 
 ## Visual identity

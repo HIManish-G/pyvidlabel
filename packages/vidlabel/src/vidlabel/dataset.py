@@ -362,14 +362,26 @@ class Dataset:
 
     def update_annotations(self, video_id: str, annotation_ids: Iterable[int], *, missing: str = "raise", **values: Any) -> int:
         """Set columns (e.g. status='approved', label='x') on the given annotations. Returns rows changed. Ids that are not in
-        this video raise KeyError (and nothing changes) unless `missing="ignore"`; giving no column to change is an error."""
+        this video raise KeyError (and nothing changes) unless `missing="ignore"`; giving no column to change is an error.
+        `mask=` (a boolean array of the frame's size, or encoded bytes) replaces the mask of mask rows and sets their box from it;
+        the result is checked like any write (box, size, kind), so a mask on a box row is refused."""
         self.video(video_id)
         if not values:
             raise ValueError("give at least one column to change, e.g. status='approved'")
-        bad = set(values) - (set(COLUMN_NAMES) - _IMMUTABLE)
+        bad = set(values) - (set(COLUMN_NAMES) - _IMMUTABLE) - {"mask"}
         if bad:
             hint = "; set x0, y0, x1, y1 instead of box" if "box" in bad else ""
             raise ValueError(f"cannot update {sorted(bad)}{hint}")
+        values = dict(values)
+        if "mask" in values:                                  # a new shape: its box is recomputed from it
+            m = values.pop("mask")
+            if m is None:
+                raise ValueError("a mask cannot be cleared; delete the row instead")
+            blob = bytes(m) if isinstance(m, (bytes, bytearray)) else _masks.encode(m)
+            box = _masks.bbox(blob)
+            if box is None:
+                raise ValueError("the new mask is empty; delete the row instead")
+            values.update(mask=blob, mask_codec=_masks.CODEC, **dict(zip(("x0", "y0", "x1", "y1"), (float(x) for x in box))))
         converted = {}
         for k, v in values.items():                       # check the values before looking for rows, so a typo is never a quiet 0
             if k == "extra" and not isinstance(v, str) and v is not None:

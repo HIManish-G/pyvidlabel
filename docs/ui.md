@@ -3,8 +3,9 @@
 `vidlabel ui` opens a web page on your own computer for looking at a dataset, reviewing what a model predicted, checking that the
 dataset is valid, and building releases. It needs no database, no Node and no internet connection.
 
-> **Status.** The interface can browse, review, validate, build releases, add and check videos, manage labels and views, and commit and
-> revert changes. It cannot yet draw new boxes or masks; use the library for those. The plan is in [Web interface design](ui-design.md).
+> **Status.** The interface can browse, review, draw and edit boxes, time spans and masks, validate, build releases, add and check
+> videos, manage labels and views, and commit and revert changes. Still to come are polish and an accessibility review. The plan is in
+> [Web interface design](ui-design.md).
 
 ## Start it
 
@@ -54,7 +55,7 @@ is unaffected, but drafts and history are lost.
 | Videos | add a video (a path or the file picker; optionally fingerprint it and read its keyframes), see each video's size, frame rate, whether its file is found and whether it has a frame index and fingerprint, **Check** it against the file, **Index** it, tell the server which folders to search for moved files, and build the optional frame cache |
 | Labels | the label list with usage counts; add labels (several at once, separated by commas) |
 | Views | the views of the dataset; create one by dragging a region on the first frame or typing numbers, with an optional resize, time windows and allowed labels; **Copy labels in** previews, then copies whole-frame rows into a view |
-| Viewer (click a video) | frame-accurate frames read by the library, boxes and masks drawn over them, a timeline of annotation density and markers, a list of what is on the frame with Approve, Reject and Delete; keys: ← → step, Shift 10 frames, Space play, Home and End, Ctrl+Z undo |
+| Viewer (click a video) | frame-accurate frames read by the library, boxes and masks drawn over them, a timeline of annotation density and markers, a list of what is on the frame with Approve, Reject and Delete, and the drawing tools (below) |
 | Review | the tracks of one video with a thumbnail, confidence, status and origin; filter, sort by lowest confidence, approve, reject or delete one track or many at once |
 | Validation | the quick check at once; the full check (decodes every mask) as a background job with a progress bar |
 | Releases | the existing releases, building a new one (choose which statuses to include), and an inspector showing the training targets for any frame |
@@ -66,6 +67,28 @@ and deleted, with Undo, Redo and Commit.
 
 Frames are read from the video file on the computer running the server. If the file has moved, the viewer still shows the annotations
 over a grey frame and says the file was not found.
+
+## Drawing and editing in the viewer
+
+Open a video and use the tools above the frame. Every drawing goes into your draft (pink "pending" outline) and is written only when you commit.
+Drawing works on the whole frame, so coordinates are always the video's own pixels. Inside a view the tools are off; draw on the whole frame
+and use **Copy labels in** on the Views page.
+
+| tool (key) | what it does |
+|---|---|
+| Select (V) | click a box or mask to select it; drag a box to move it, drag its handles to resize it; the panel on the right changes its label or track, or edits a span's frames |
+| Box (B) | drag on the frame to draw a box at the current frame |
+| Span (S) | drag on the timeline to label a stretch of frames; a click labels one frame |
+| Brush (M), Eraser (E) | paint or erase a mask on a layer the size of the frame; `[` and `]` change the brush size |
+| Polygon (P) | click corners; click the first point, double-click or press Enter to close the shape |
+
+Choose the **label** and the **track** for new drawings next to the tools. "New track" gives the next free track number and then keeps using
+it, so you can draw a box, press → and draw the next one. A mask is saved with **Save mask** (or Enter); a mask in progress can be undone
+stroke by stroke with Ctrl+Z. To change an existing mask, select it and choose **Edit mask shape**, paint or erase, then **Apply to the mask**;
+its box follows the new shape. New rows are marked as made by a person (`origin` human, status unreviewed) with your name as the author.
+
+Keys: ← → step a frame, Shift 10 frames, Space plays, Home and End, Delete removes the selected row, Esc cancels a polygon or drag, Ctrl+Z and
+Ctrl+Y undo and redo your draft.
 
 ## Slow work runs as jobs
 

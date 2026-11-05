@@ -189,6 +189,35 @@ def _filters(ctx: Ctx) -> dict:
     return f
 
 
+def bits_to_mask(obj: Any, size: tuple[int, int] | None = None) -> np.ndarray:
+    """A mask from the page: `{"width", "height", "data"}` where data is base64 of the bits, row by row, 8 to a byte (most significant first)."""
+    try:
+        w, h = int(obj["width"]), int(obj["height"])
+        raw = base64.b64decode(obj["data"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("a mask must be {width, height, data} with data as base64 of packed bits") from None
+    if w <= 0 or h <= 0 or w * h > 1 << 28:
+        raise ValueError("the mask size is not valid")
+    if size is not None and (w, h) != tuple(size):
+        raise ValueError(f"the mask is {w}×{h} but the video frame is {size[0]}×{size[1]}")
+    if len(raw) != (w * h + 7) // 8:
+        raise ValueError("the mask data has the wrong length")
+    return np.unpackbits(np.frombuffer(raw, np.uint8))[:w * h].reshape(h, w).astype(bool)
+
+
+def mask_to_bits(mask: np.ndarray) -> dict:
+    h, w = mask.shape
+    return {"width": w, "height": h, "data": base64.b64encode(np.packbits(mask.reshape(-1)).tobytes()).decode("ascii")}
+
+
+def _with_mask(state: UIState, video_id: str, data: dict, key: str) -> dict:
+    """Replace `mask_bits` in a request's row or values by a boolean `mask` array of the right size."""
+    data = dict(data)
+    if "mask_bits" in data:
+        data["mask"] = bits_to_mask(data.pop("mask_bits"), state.dataset().video(video_id).display_size)
+    return data
+
+
 def _draft(state: UIState, ctx: Ctx) -> D.Draft:
     return D.Draft.load(state.dataset(), ctx.author)
 
@@ -423,6 +452,16 @@ def _mask_overlay(blob: bytes, view) -> tuple[bytes, int, int] | None:
     return _png(rgba), x0, y0
 
 
+@route("GET", "/api/mask-bits/{video_id}/{ann_id}")
+def mask_bits(state: UIState, ctx: Ctx):
+    """One mask in full-frame size, to edit it in the page. Needs `frame` (any frame the row covers) to find the row quickly."""
+    vid, aid, n = ctx.params["video_id"], to_id(ctx.params["ann_id"]), int(ctx.q.get("frame", 0))
+    for r in _rows(state, ctx, vid, {"frames": (n, n)}):
+        if r["annotation_id"] == aid and r.get("mask") is not None:
+            return mask_to_bits(_masks.decode(bytes(r["mask"])))
+    raise KeyError(f"no mask {ctx.params['ann_id']} on frame {n} of video '{vid}'")
+
+
 @route("GET", "/api/frame-data/{video_id}/{frame}", covers=("preview",))
 def frame_data(state: UIState, ctx: Ctx):
     """The annotations on one frame (with the draft applied), already in the pixels of the picture shown, masks as small images."""
@@ -499,17 +538,17 @@ def _author(ctx: Ctx) -> str:
 @route("POST", "/api/draft/add", write=True, covers=("Dataset.add_annotations",))
 def draft_add(state: UIState, ctx: Ctx):
     d = _draft(state, ctx)
-    row = dict(ctx.need("row"))
-    if row.get("mask_png_b64"):
-        raise ValueError("send masks as 'mask_b64' (the encoded mask) or draw them with the mask tool")
-    tmp = d.add(ctx.need("video_id"), row)
+    vid = ctx.need("video_id")
+    row = _with_mask(state, vid, dict(ctx.need("row")), "row")
+    tmp = d.add(vid, row)
     return {"id": tmp, "draft": out(d.state())}
 
 
 @route("POST", "/api/draft/update", write=True, covers=("Dataset.update_annotations",))
 def draft_update(state: UIState, ctx: Ctx):
     d = _draft(state, ctx)
-    d.update(ctx.need("video_id"), [to_id(i) for i in ctx.need("ids")], **dict(ctx.need("values")))
+    vid = ctx.need("video_id")
+    d.update(vid, [to_id(i) for i in ctx.need("ids")], **_with_mask(state, vid, dict(ctx.need("values")), "values"))
     return out(d.state())
 
 

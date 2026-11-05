@@ -162,3 +162,26 @@ def test_files_are_utf8_whatever_the_os_locale(tmp_path):
     names = [l.name for l in Dataset.open(d.path).vocab.labels]
     assert names == ["café", "人", "ボール"]
     assert "café".encode("utf-8") in (d.path / "vocab.json").read_bytes()
+
+
+def test_update_annotations_replaces_a_mask_and_follows_its_box(tmp_path):
+    import numpy as np
+    ds = Dataset.create(tmp_path / "d")
+    ds.add_video({"video_id": "v", "frame_count": 10, "fps": {"num": 25, "den": 1}, "width": 40, "height": 30})
+    ds.add_labels(["a"])
+    old = np.zeros((30, 40), bool)
+    old[2:6, 3:9] = True
+    [mid] = ds.add_annotations([{"kind": "mask", "label": "a", "start_frame": 1, "mask": old, "origin": "human"}], "v")
+    [bid] = ds.add_annotations([{"kind": "box", "label": "a", "start_frame": 1, "box": (1, 1, 5, 5), "origin": "human"}], "v")
+    new = np.zeros((30, 40), bool)
+    new[10:20, 12:30] = True
+    assert ds.update_annotations("v", [mid], mask=new) == 1
+    r = ds.annotations("v", kind="mask").to_pylist()[0]
+    assert (masks.decode(r["mask"]) == new).all() and (r["x0"], r["y0"], r["x1"], r["y1"]) == (12, 10, 30, 20)
+    with pytest.raises(ValueError, match="empty"):
+        ds.update_annotations("v", [mid], mask=np.zeros((30, 40), bool))
+    with pytest.raises(ValueError):                                    # a mask of the wrong size is refused by the validator
+        ds.update_annotations("v", [mid], mask=np.ones((10, 10), bool))
+    with pytest.raises(Exception):                                     # and a box row cannot get one
+        ds.update_annotations("v", [bid], mask=new)
+    assert (masks.decode(ds.annotations("v", kind="mask").to_pylist()[0]["mask"]) == new).all()     # failed updates changed nothing
