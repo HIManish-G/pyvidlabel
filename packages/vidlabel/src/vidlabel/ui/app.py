@@ -57,6 +57,7 @@ class UIState:
     write_lock: threading.RLock = field(default_factory=threading.RLock)
     readers: dict = field(default_factory=dict)
     readers_lock: threading.Lock = field(default_factory=threading.Lock)
+    video_roots: list[Path] = field(default_factory=list)   # folders searched for videos that moved (this session only)
 
     @property
     def local_only(self) -> bool:
@@ -247,7 +248,8 @@ def videos(state: UIState, ctx: Ctx):
     for v in ds.video_ids():
         m = ds.video(v)
         idx = ds.frame_index(v)
-        rows.append({"video_id": v, "width": m.width, "height": m.height, "frame_count": m.frame_count, "fps": m.fps.value,
+        rows.append({"video_id": v, "file_found": ds.resolve_video_path(v, state.video_roots) is not None, "width": m.width, "height": m.height,
+                     "frame_count": m.frame_count, "fps": m.fps.value,
                      "codec": m.codec, "has_index": idx is not None, "has_hash": bool(m.content_hash),
                      "sources": [s.uri for s in m.sources], "is_vfr": m.is_vfr})
     return out({"videos": rows})
@@ -259,7 +261,7 @@ def video_detail(state: UIState, ctx: Ctx):
     vid = ctx.params["video_id"]
     m = ds.video(vid)
     idx = ds.frame_index(vid)
-    found = ds.resolve_video_path(vid, [])
+    found = ds.resolve_video_path(vid, state.video_roots)
     return out({"metadata": json.loads(m.model_dump_json(exclude_none=True)), "frame_index": idx.interval_stats() if idx else None,
                 "file_found": bool(found), "file": str(found) if found else None,
                 "views": [v for v in ds.view_ids() if ds.view(v).video_id == vid],
@@ -270,9 +272,30 @@ def video_detail(state: UIState, ctx: Ctx):
 def locate_video(state: UIState, ctx: Ctx):
     """Where is this video on this computer? Searches the given folders by file name."""
     ds = state.dataset()
-    roots = [_fs_check(state, Path(r)) for r in ctx.get("roots", [])]
+    roots = [_fs_check(state, Path(r)) for r in ctx.get("roots", [])] + state.video_roots
     p = ds.resolve_video_path(ctx.params["video_id"], roots)
     return {"found": bool(p), "file": str(p) if p else None}
+
+
+def _roots(state: UIState, ctx: Ctx) -> list[str]:
+    return [str(_fs_check(state, Path(r))) for r in ctx.get("roots", [])] + [str(r) for r in state.video_roots]
+
+
+@route("GET", "/api/roots")
+def get_roots(state: UIState, ctx: Ctx):
+    return {"roots": [str(r) for r in state.video_roots]}
+
+
+@route("POST", "/api/roots", write=True)
+def set_roots(state: UIState, ctx: Ctx):
+    """Folders to search for videos that are not where the dataset recorded them. Kept for this session only."""
+    state.video_roots = [_fs_check(state, Path(r)) for r in ctx.get("roots", [])]
+    with state.readers_lock:
+        for reader, lock in state.readers.values():
+            with lock:
+                reader.close()
+        state.readers.clear()
+    return {"roots": [str(r) for r in state.video_roots]}
 
 
 @route("GET", "/api/views", covers=("Dataset.view", "Dataset.view_ids"))
@@ -359,12 +382,15 @@ def timeline(state: UIState, ctx: Ctx):
     bins = 200
     size = max(1, math.ceil(max(n, 1) / bins))
     density = [0] * (math.ceil(max(n, 1) / size))
+    by_status = {st: [0] * len(density) for st in ("approved", "unreviewed", "rejected")}
     for r in rows:
         if r.get("_pending") == "deleted" or r["kind"] == "marker":
             continue
-        density[min(r["start_frame"] // size, len(density) - 1)] += 1
+        i = min(r["start_frame"] // size, len(density) - 1)
+        density[i] += 1
+        by_status.setdefault(r["status"], [0] * len(density))[i] += 1
     markers = [row_out(r) for r in rows if r["kind"] == "marker"]
-    return out({"frame_count": n, "bin_size": size, "density": density, "markers": markers,
+    return out({"frame_count": n, "bin_size": size, "density": density, "by_status": by_status, "markers": markers,
                 "tracks": _tracks_from_rows([r for r in rows if r.get("_pending") != "deleted"])})
 
 
@@ -427,7 +453,7 @@ def _reader(state: UIState, video_id: str, view_id: str | None):
         if entry is None:
             ds = state.dataset()
             meta = ds.video(video_id)
-            path = ds.resolve_video_path(video_id, [])
+            path = ds.resolve_video_path(video_id, state.video_roots)
             if path is None:
                 raise FileNotFoundError(f"cannot find the video file for '{video_id}'. Use 'Locate the video' on the Videos page.")
             entry = (FrameReader(path, meta, ds.view(view_id) if view_id else None, index=ds.frame_index(video_id)), threading.Lock())
@@ -627,7 +653,7 @@ def job_add_video(state: UIState, ctx: Ctx):
 @route("POST", "/api/jobs/index", covers=("index", "Dataset.set_frame_index"))
 def job_index(state: UIState, ctx: Ctx):
     ds = state.dataset()
-    roots = [str(_fs_check(state, Path(r))) for r in ctx.get("roots", [])]
+    roots = _roots(state, ctx)
     kw = {"video_ids": ctx.get("video_ids") or None, "force": bool(ctx.get("force", False)), "verify": bool(ctx.get("verify", True)),
           "roots": roots}
     return out(_job(state, "index", "Index videos", lambda c: ops.index_videos(ds, ctx=c, **kw), writes=True))
@@ -637,7 +663,7 @@ def job_index(state: UIState, ctx: Ctx):
 def job_check_video(state: UIState, ctx: Ctx):
     ds = state.dataset()
     vid = ctx.need("video_id")
-    roots = [str(_fs_check(state, Path(r))) for r in ctx.get("roots", [])]
+    roots = _roots(state, ctx)
     vp = str(_fs_check(state, Path(ctx.get("video_path")))) if ctx.get("video_path") else None
     kw = {"video_path": vp, "roots": roots, "hash": bool(ctx.get("hash", False)), "seek": bool(ctx.get("seek", False))}
     return out(_job(state, "check-video", f"Check {vid}", lambda c: ops.check_video(ds, vid, ctx=c, **kw)))
@@ -649,7 +675,7 @@ def job_cache(state: UIState, ctx: Ctx):
     dest = _fs_check(state, Path(ctx.get("out") or (ds.path / D.STATE_DIR / "cache")))
     kw = {k: ctx.get(k) for k in ("release", "view_id", "frames", "format", "quality") if ctx.get(k) is not None}
     kw["overwrite"] = bool(ctx.get("overwrite", False))
-    kw["roots"] = [str(_fs_check(state, Path(r))) for r in ctx.get("roots", [])]
+    kw["roots"] = _roots(state, ctx)
     return out(_job(state, "cache", "Build the frame cache", lambda c: ops.build_cache(ds, dest, ctx=c, **kw)))
 
 
@@ -664,7 +690,7 @@ def job_preview(state: UIState, ctx: Ctx):
     tag = os.urandom(4).hex()
     dest = state.exports_dir() / tag
     kw = {"frames": frames, "view_id": ctx.get("view_id") or None, "mp4": bool(ctx.get("mp4", False)),
-          "roots": [str(_fs_check(state, Path(r))) for r in ctx.get("roots", [])]}
+          "roots": _roots(state, ctx)}
 
     def run(c):
         res = ops.export_preview(ds, vid, dest, ctx=c, **kw)

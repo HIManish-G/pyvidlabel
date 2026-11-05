@@ -4,19 +4,28 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>vidlabel</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%232563eb'/%3E%3Cpath d='M4 5h8v6H4z' fill='none' stroke='white' stroke-width='1.5'/%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%2312263A'/%3E%3Cpath d='M3 12V4M6 12V7M9 12V5M12 12V9' stroke='%23E5007D' stroke-width='1.6'/%3E%3C/svg%3E">
+<link rel="preload" href="/static/fonts/bricolage.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<header id="top">
+<aside id="rail">
   <a class="brand" href="#/overview">vidlabel</a>
-  <nav id="nav"></nav>
+  <div class="ruler" aria-hidden="true"></div>
+  <nav id="nav" aria-label="Pages"></nav>
   <div class="spacer"></div>
-  <button id="jobs-btn" class="chip" hidden></button>
-  <button id="changes-btn" class="chip">Changes <span class="badge" id="changes-count">0</span></button>
-  <button id="author-btn" class="chip" title="Your name is saved with the changes you commit"></button>
-</header>
+  <button id="author-btn" class="linkish" title="Your name is saved with the changes you commit"></button>
+</aside>
 <main id="main"></main>
+<footer id="tape">
+  <div id="tape-bar" aria-hidden="true"></div>
+  <button id="changes-btn" class="tape-text" aria-label="Review pending changes"><span id="tape-text">No pending changes</span> <span class="badge" id="changes-count" hidden>0</span></button>
+  <div class="spacer"></div>
+  <button id="jobs-btn" class="tape-btn" hidden></button>
+  <button id="undo-btn" class="tape-btn" disabled>Undo</button>
+  <button id="redo-btn" class="tape-btn" disabled>Redo</button>
+  <button id="commit-btn" class="tape-commit" disabled>Commit…</button>
+</footer>
 <aside id="drawer" hidden></aside>
 <div id="toasts"></div>
 <div id="modal-root"></div>

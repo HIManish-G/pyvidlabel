@@ -7,7 +7,7 @@ An honest list of what vidlabel does not do, what has not been verified, and wha
 | not included | why, and what to do |
 |---|---|
 | importers and exporters for COCO, YOLO, MOT, CVAT, ... | formats vary too much for one library to cover well. Write a converter on `add_annotations` ([guide](converters.md)); a tested example is in `examples/convert_csv.py` |
-| a labelling interface | vidlabel is the format and library between labelling tools and training code. A local web interface (`vidlabel ui`) can browse, review, validate and release; drawing and building datasets from it come in later stages (see [Web interface](ui.md)) |
+| a labelling interface | vidlabel is the format and library between labelling tools and training code. A local web interface (`vidlabel ui`) can browse, review, validate and release; drawing boxes and masks comes in a later stage (see [Web interface](ui.md)) |
 | storing video pixels | datasets reference videos by path hint and content hash |
 | sampling policy (class balancing, weighting, curriculum) | it is the user's decision; vidlabel arranges cheap reading of the frames you choose (`ReadPlan`) |
 | keypoints, polygons, image-level classes as dedicated kinds | the three kinds are marker, box, mask. Keypoints and polygons can go in `extra` for now or be rasterised to masks; a new kind needs a spec change |
@@ -46,7 +46,7 @@ An honest list of what vidlabel does not do, what has not been verified, and wha
 ## Roadmap (not promises)
 
 1. Run and fix the Windows and macOS CI jobs.
-2. The rest of the local web interface: builder pages, then drawing boxes, spans and masks ([design](ui-design.md)).
+2. The rest of the local web interface: drawing boxes, spans and masks, then polish ([design](ui-design.md)).
 3. Publish to PyPI under a final name; add a changelog automation and a signed release process.
 4. Decide on image collections (many images in one table) if people ask for them: single images already work as one-frame videos.
 5. More annotation kinds (keypoints, polygons) if a clear need appears; each needs a spec change and validator rules.

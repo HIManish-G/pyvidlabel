@@ -3,9 +3,8 @@
 `vidlabel ui` opens a web page on your own computer for looking at a dataset, reviewing what a model predicted, checking that the
 dataset is valid, and building releases. It needs no database, no Node and no internet connection.
 
-> **Status.** This is the first stage of the interface. It can browse, review, validate, build releases, and commit and revert changes.
-> It cannot yet draw new boxes or masks, add videos, or create views from the page; use the command line or the library for those (the
-> server already has routes for them). The plan is in [Web interface design](ui-design.md).
+> **Status.** The interface can browse, review, validate, build releases, add and check videos, manage labels and views, and commit and
+> revert changes. It cannot yet draw new boxes or masks; use the library for those. The plan is in [Web interface design](ui-design.md).
 
 ## Start it
 
@@ -51,13 +50,19 @@ is unaffected, but drafts and history are lost.
 
 | page | what it does |
 |---|---|
-| Overview | counts by status, kind, origin and label; the videos; add labels |
-| Videos | each video's size, frame rate, whether it has a frame index and content hash, and where it came from |
+| Overview | headline counts and **the score**: every video as a band on one ruler, coloured by review status (click a band to open the video at that frame); counts by status, kind, origin and label |
+| Videos | add a video (a path or the file picker; optionally fingerprint it and read its keyframes), see each video's size, frame rate, whether its file is found and whether it has a frame index and fingerprint, **Check** it against the file, **Index** it, tell the server which folders to search for moved files, and build the optional frame cache |
+| Labels | the label list with usage counts; add labels (several at once, separated by commas) |
+| Views | the views of the dataset; create one by dragging a region on the first frame or typing numbers, with an optional resize, time windows and allowed labels; **Copy labels in** previews, then copies whole-frame rows into a view |
 | Viewer (click a video) | frame-accurate frames read by the library, boxes and masks drawn over them, a timeline of annotation density and markers, a list of what is on the frame with Approve, Reject and Delete; keys: ← → step, Shift 10 frames, Space play, Home and End, Ctrl+Z undo |
 | Review | the tracks of one video with a thumbnail, confidence, status and origin; filter, sort by lowest confidence, approve, reject or delete one track or many at once |
 | Validation | the quick check at once; the full check (decodes every mask) as a background job with a progress bar |
 | Releases | the existing releases, building a new one (choose which statuses to include), and an inspector showing the training targets for any frame |
 | History | past commits and Revert |
+
+Adding labels, views and videos, copying labels into a view, indexing and caching are applied at once (they only add, and the library has no
+remove for them); only annotation edits go through the draft. The bar along the bottom always shows your draft: how much is added, changed
+and deleted, with Undo, Redo and Commit.
 
 Frames are read from the video file on the computer running the server. If the file has moved, the viewer still shows the annotations
 over a grey frame and says the file was not found.
@@ -82,3 +87,7 @@ See [Security](security.md) for what the token, host and origin checks do and do
 - *The page says the token is missing*: open the exact address that `vidlabel ui` printed.
 - *Frames are grey*: the video file is not where the dataset recorded it (the viewer says so); run `vidlabel check-video`, or start the server on the computer that has the file.
 - *A commit says the dataset changed*: use "Apply my edits on top", or discard your draft and start again.
+
+## Bundled font
+
+The interface uses the Bricolage Grotesque font, shipped inside the package (`static/fonts/`, SIL Open Font License; the licence text is next to the file), so nothing is loaded from the internet.

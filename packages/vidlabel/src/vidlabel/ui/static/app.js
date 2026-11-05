@@ -78,9 +78,7 @@ function confirmBox(title, text) {
 async function refreshDraft() {
   if (!S.session || !S.session.has_dataset) return;
   S.draft = await GET("/api/draft");
-  const s = S.draft.summary, n = s.added + s.modified + s.deleted;
-  $("#changes-count").textContent = n;
-  $("#changes-btn").classList.toggle("has", n > 0);
+  renderTape();
   if (!$("#drawer").hidden) renderDrawer();
 }
 async function refreshInfo() {
@@ -97,6 +95,16 @@ async function draftOp(path, body, okMsg) {
 }
 const setStatus = (video_id, ids, status) => draftOp("/api/draft/update", { video_id, ids, values: { status } });
 const setTrackStatus = (video_id, track_id, status, view_id) => draftOp("/api/draft/update-track", { video_id, track_id, view_id, values: { status } });
+
+/* ---------- the draft tape along the bottom ---------- */
+function renderTape() {
+  const st = S.draft, s = st.summary, n = s.added + s.modified + s.deleted;
+  const bar = $("#tape-bar"), cs = getComputedStyle(document.documentElement);
+  bar.replaceChildren(...[["added", "--ok"], ["modified", "--warn"], ["deleted", "--bad"]].filter(([k]) => s[k]).map(([k, c]) => h("i", { style: `width:${s[k] / n * 100}%;background:${cs.getPropertyValue(c)}` })));
+  $("#tape-text").textContent = n ? `${s.added} added, ${s.modified} changed, ${s.deleted} deleted` : "No pending changes";
+  const badge = $("#changes-count"); badge.textContent = n; badge.hidden = !n;
+  $("#undo-btn").disabled = !st.can_undo; $("#redo-btn").disabled = !st.can_redo; $("#commit-btn").disabled = n === 0;
+}
 
 /* ---------- the Changes drawer ---------- */
 function renderDrawer() {
@@ -192,7 +200,7 @@ function progressBox() {
 }
 
 /* ---------- folder picker ---------- */
-function pickFolder(start, then) {
+function pickFolder(start, then, files) {
   const list = h("div", { class: "picker" }), cur = h("input", { type: "text", value: start || "" });
   const go = async (p) => {
     const r = await attempt(() => GET("/api/fs", { path: p }));
@@ -200,15 +208,15 @@ function pickFolder(start, then) {
     cur.value = r.path;
     list.replaceChildren(
       r.parent != null ? h("div", { onclick: () => go(r.parent) }, "↑  ..") : null,
-      r.entries.filter(e => e.dir).map(e => h("div", { onclick: () => go(e.path) }, "📁 " + e.name + (e.is_dataset ? "  (dataset)" : ""))));
+      r.entries.filter(e => e.dir || files).map(e => h("div", { onclick: () => e.dir ? go(e.path) : (cur.value = e.path) }, (e.dir ? "📁 " : "🎞 ") + e.name + (e.is_dataset ? "  (dataset)" : ""))));
   };
   go(start || "");
-  modal("Choose a folder", h("div", {}, cur, h("div", { style: "height:8px" }), list),
-    [{ text: "Cancel" }, { text: "Use this folder", primary: true, run: () => then(cur.value) }]);
+  modal(files ? "Choose a video file" : "Choose a folder", h("div", {}, cur, h("div", { style: "height:8px" }), list),
+    [{ text: "Cancel" }, { text: files ? "Use this file" : "Use this folder", primary: true, run: () => then(cur.value) }]);
 }
 
 /* ---------- router ---------- */
-const NAV = [["overview", "Overview"], ["browse", "Videos"], ["review", "Review"], ["validation", "Validation"], ["releases", "Releases"], ["history", "History"]];
+const NAV = [["overview", "Overview"], ["browse", "Videos"], ["labels", "Labels"], ["views", "Views"], ["review", "Review"], ["validation", "Validation"], ["releases", "Releases"], ["history", "History"]];
 function parseHash() {
   const [path, query] = (location.hash.slice(2) || "overview").split("?");
   return { parts: path.split("/").map(decodeURIComponent), q: Object.fromEntries(new URLSearchParams(query || "")) };
@@ -225,7 +233,7 @@ async function render() {
   $("#nav").replaceChildren(...NAV.map(([k, t]) => h("a", { href: "#/" + k, class: (parts[0] === k || (k === "browse" && parts[0] === "video")) ? "on" : "" }, t)));
   if (!S.session.has_dataset) return pageSetup(main);
   try {
-    const pages = { overview: pageOverview, browse: pageBrowse, video: pageViewer, review: pageReview, validation: pageValidation, releases: pageReleases, history: pageHistory };
+    const pages = { overview: pageOverview, browse: pageBrowse, video: pageViewer, labels: pageLabels, views: pageViews, review: pageReview, validation: pageValidation, releases: pageReleases, history: pageHistory };
     await (pages[parts[0]] || pageOverview)(main, parts, q, () => mine === renderToken);
   } catch (e) { main.replaceChildren(h("div", { class: "page" }, h("div", { class: "notice bad" }, e.message))); }
 }
@@ -245,22 +253,22 @@ function pageSetup(main) {
 async function pageOverview(main, parts, q, alive) {
   await refreshInfo();
   const i = S.info, st = i.stats;
-  const counts = (obj, kind) => Object.entries(obj || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) =>
-    h("tr", {}, h("td", {}, kind === "label" ? dot(k) : null, kind === "status" ? tag(k) : (kind === "label" ? k : k)), h("td", { class: "num" }, fmt(v))));
-  const newLabels = h("input", { type: "text", placeholder: "add labels, comma separated" });
-  const nonzero = Object.keys(st.by_label);
+  const list = (obj, kind) => Object.entries(obj || {}).sort((a, b) => b[1] - a[1]).map(([k, v]) =>
+    h("tr", {}, h("td", {}, kind === "status" ? tag(k) : k), h("td", { class: "num" }, fmt(v))));
+  const score = h("div", { class: "score" });
+  const total = st.annotations;
   main.replaceChildren(h("div", { class: "page" },
-    h("h1", {}, "Overview"), h("p", { class: "muted mono" }, i.path),
-    h("div", { class: "grid cols4", style: "margin-bottom:14px" }, [["Videos", st.videos], ["Annotations", st.annotations], ["Labels", st.labels_in_vocab], ["Views", st.views], ["Releases", i.releases.length]].map(([l, n]) =>
-      h("div", { class: "card stat", style: "margin:0" }, h("div", { class: "n" }, fmt(n)), h("div", { class: "l" }, l)))),
-    h("div", { class: "grid cols2" },
-      h("div", { class: "card" }, h("h2", {}, "By status"), h("table", {}, counts(st.by_status, "status"))),
-      h("div", { class: "card" }, h("h2", {}, "By kind and origin"), h("table", {}, counts(st.by_kind), counts(st.by_origin)))),
-    h("div", { class: "card" }, h("h2", {}, "Labels"),
-      h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Label"), h("th", { class: "num" }, "Annotations"))),
-        h("tbody", {}, i.labels.map(l => h("tr", {}, h("td", {}, dot(l.name), l.name), h("td", { class: "num" }, fmt(st.by_label[l.name] || 0)))))),
-      h("div", { class: "row", style: "margin-top:10px" }, newLabels, h("button", { onclick: async () => { if (!newLabels.value.trim()) return; if (await attempt(() => POST("/api/labels", { names: [newLabels.value] }), "Labels added")) { await refreshInfo(); render(); } } }, "Add"))),
-    h("div", { class: "card" }, h("h2", {}, "Videos"), videoTable(st.video_details))));
+    h("h1", {}, i.path.split(/[\\/]/).filter(Boolean).pop() || "Dataset"), h("div", { class: "muted mono" }, i.path),
+    h("div", { class: "figures" }, [["videos", st.videos], ["annotations", st.annotations], ["labels", st.labels_in_vocab], ["views", st.views], ["releases", i.releases.length]].map(([l, n]) => h("div", {}, h("b", {}, fmt(n)), h("span", {}, l)))),
+    h("h2", {}, "Every video on one ruler"),
+    total || st.videos ? [score, h("div", { class: "score-key" }, tag("approved", "approved"), tag("unreviewed", "unreviewed"), tag("rejected", "rejected"), h("span", {}, "Band length is video length; height is how many annotations start there. Click a band to open the video at that frame."))]
+      : h("div", { class: "empty" }, "Nothing here yet. Add a video on the Videos page, then annotate it with the library or import rows with add_annotations."),
+    h("div", { class: "grid cols2", style: "margin-top:34px" },
+      h("div", { class: "card" }, h("h2", {}, "Review status"), h("table", {}, h("tbody", {}, list(st.by_status, "status")))),
+      h("div", { class: "card" }, h("h2", {}, "Kind and origin"), h("table", {}, h("tbody", {}, list(st.by_kind), list(st.by_origin))))),
+    h("div", { class: "card" }, h("h2", {}, "Labels"), i.labels.length ? h("table", {}, h("tbody", {}, i.labels.map(l => h("tr", {}, h("td", {}, dot(l.name), l.name), h("td", { class: "num" }, fmt(st.by_label[l.name] || 0)))))) : h("div", { class: "empty" }, "No labels yet."),
+      h("p", {}, h("a", { href: "#/labels" }, "Manage labels")))));
+  if (st.video_details.length) drawScore(score, st.video_details);
 }
 function videoTable(rows) {
   if (!rows.length) return h("div", { class: "empty" }, "No videos yet. Add one with ", h("span", { class: "mono" }, "vidlabel add-video"), ".");
@@ -269,17 +277,197 @@ function videoTable(rows) {
       h("td", { class: "num" }, `${v.width}×${v.height}`), h("td", { class: "num" }, v.fps), h("td", { class: "num" }, fmt(v.frame_count)), h("td", { class: "num" }, v.codec || "–"),
       h("td", { class: "num" }, fmt(v.annotations)), h("td", { class: "right" }, h("a", { href: "#/review/" + encodeURIComponent(v.video_id) }, "Review"))))));
 }
+/* ---------- the score: every video as a band, coloured by review status ---------- */
+const STATUS_COLORS = () => { const c = getComputedStyle(document.documentElement); return { approved: c.getPropertyValue("--ok").trim(), unreviewed: c.getPropertyValue("--warn").trim(), rejected: c.getPropertyValue("--bad").trim(), ink: c.getPropertyValue("--ink").trim(), rule: c.getPropertyValue("--rule").trim() }; };
+async function drawScore(root, videos) {
+  const maxFrames = Math.max(1, ...videos.map(v => v.frame_count));
+  const rows = videos.slice(0, 40).map(v => {
+    const cv = h("canvas", { height: 38 }), n = h("div", { class: "n" }, fmt(v.annotations));
+    return { v, cv, el: h("div", { class: "score-row" }, h("a", { class: "name", href: "#/video/" + encodeURIComponent(v.video_id), title: v.video_id }, v.video_id), cv, n) };
+  });
+  root.replaceChildren(...rows.map(r => r.el));
+  if (videos.length > 40) root.append(h("div", { class: "muted", style: "padding:8px 0" }, `Showing the first 40 of ${videos.length} videos.`));
+  const col = STATUS_COLORS();
+  for (const { v, cv } of rows) {
+    let tl; try { tl = await GET("/api/timeline/" + encodeURIComponent(v.video_id)); } catch (e) { continue; }
+    const paint = () => {
+      const full = cv.parentElement.clientWidth - 150 - 90 - 28, w = Math.max(40, Math.round(full * v.frame_count / maxFrames)), dpr = devicePixelRatio || 1, H = 38;
+      cv.style.width = w + "px"; cv.width = w * dpr; cv.height = H * dpr;
+      const x = cv.getContext("2d"); x.scale(dpr, dpr);
+      x.fillStyle = col.rule; x.fillRect(0, H - 1, w, 1);
+      const bw = Math.max(1, (tl.bin_size / Math.max(1, tl.frame_count)) * w), mx = Math.max(1, ...tl.density);
+      tl.density.forEach((d, i) => {
+        if (!d) return;
+        let y = H - 2;
+        for (const st of ["approved", "unreviewed", "rejected"]) {
+          const hh = Math.round(((tl.by_status[st] || [])[i] || 0) / mx * (H - 8));
+          if (hh) { x.fillStyle = col[st]; x.fillRect(Math.floor(i * bw), y - hh, Math.ceil(bw) - (bw > 3 ? 1 : 0), hh); y -= hh; }
+        }
+      });
+      x.fillStyle = col.ink;
+      for (let f = 0; f <= v.frame_count; f += Math.max(1, 10 ** Math.floor(Math.log10(v.frame_count)))) x.fillRect(Math.round(f / v.frame_count * (w - 1)), H - 6, 1, 6);
+    };
+    paint();
+    cv.addEventListener("click", e => { const r = cv.getBoundingClientRect(); go("video/" + encodeURIComponent(v.video_id), { f: Math.round((e.clientX - r.left) / r.width * (v.frame_count - 1)) }); });
+    cv.title = "Click to open the video at this frame";
+  }
+}
+
+/* ---------- videos: add, health, where the files are ---------- */
+function checkResult(r) {
+  return h("div", {}, h("div", { class: "row" }, tag(r.ok ? "matches the dataset" : "does not match", r.ok ? "ok" : "bad"), h("span", { class: "mono muted" }, r.file)),
+    r.problems.map(p => h("div", { class: "notice bad" }, p)), r.notes.map(n => h("div", { class: "notice" }, n)),
+    r.keyframes ? h("p", { class: "muted" }, `Keyframes every ${r.keyframes.median} frames (most ${r.keyframes.max}); average frames decoded per random read: ${Number(r.keyframes.mean_cost).toFixed(1)}.`) : null,
+    r.seek ? h("p", { class: r.seek.exact ? "" : "notice warn" }, r.seek.exact ? `Random access is exact at ${r.seek.positions} test positions.` : `Random access returned different pictures at ${r.seek.mismatches.length} positions; read in order instead, or index the video.`) : null);
+}
+function checkDialog(v) {
+  const hash = h("input", { type: "checkbox" }), seek = h("input", { type: "checkbox" }), out = h("div"), path = h("input", { type: "text", placeholder: "leave empty to use the recorded location" });
+  const run = async (btn) => {
+    btn.disabled = true; const pb = progressBox(); out.replaceChildren(pb);
+    const r = await runJob("check-video", { video_id: v.video_id, hash: hash.checked, seek: seek.checked, video_path: path.value.trim() || null }, pb.update);
+    btn.disabled = false; out.replaceChildren(r ? checkResult(r) : "");
+  };
+  const body = h("div", {}, h("p", { class: "muted" }, "Compares the file with what the dataset recorded: size, frame count, timing."),
+    h("label", { class: "row tight" }, hash, "Also compare the content fingerprint (reads the whole file)"),
+    h("label", { class: "row tight" }, seek, "Also test random access (decodes the video once)"), h("div", { style: "height:8px" }), path, h("div", { style: "height:10px" }),
+    h("button", { class: "primary", onclick: e => run(e.target) }, "Run check"), h("div", { style: "height:10px" }), out);
+  modal("Check " + v.video_id, body, [{ text: "Close" }]);
+}
 async function pageBrowse(main) {
   await refreshInfo();
   const { videos } = await GET("/api/videos");
-  main.replaceChildren(h("div", { class: "page" }, h("h1", {}, "Videos"),
-    videos.length ? h("div", { class: "card" }, h("table", {}, h("thead", {}, h("tr", {}, ["Video", "Size", "fps", "Frames", "Frame index", "Hash", "Source"].map(t => h("th", {}, t)))),
-      h("tbody", {}, videos.map(v => h("tr", {}, h("td", {}, h("a", { href: "#/video/" + encodeURIComponent(v.video_id) }, v.video_id)), h("td", {}, `${v.width}×${v.height}`),
-        h("td", {}, v.fps + (v.is_vfr ? " (variable)" : "")), h("td", {}, fmt(v.frame_count)), h("td", {}, v.has_index ? tag("yes", "ok") : tag("no", "warn")),
-        h("td", {}, v.has_hash ? tag("yes", "ok") : tag("no", "warn")), h("td", { class: "mono" }, (v.sources[0] || "–")))))))
-      : h("div", { class: "card empty" }, "No videos yet."),
-    h("p", { class: "muted" }, "Adding and checking videos from this page arrives in the next stage; for now use ", h("span", { class: "mono" }, "vidlabel add-video"), " and ", h("span", { class: "mono" }, "vidlabel check-video"), ".")));
+  const { roots } = await GET("/api/roots");
+  const path = h("input", { type: "text", placeholder: "path to a video file" }), vid = h("input", { type: "text", placeholder: "name (default: the file name)" });
+  const hash = h("input", { type: "checkbox", checked: true }), index = h("input", { type: "checkbox", checked: true }), pbox = h("div");
+  const add = async (btn) => {
+    if (!path.value.trim()) { toast("Choose a video file first.", true); return; }
+    btn.disabled = true; const pb = progressBox(); pbox.replaceChildren(pb);
+    const r = await runJob("add-video", { path: path.value.trim(), video_id: vid.value.trim() || null, hash: hash.checked, index: index.checked }, pb.update);
+    btn.disabled = false; pbox.replaceChildren();
+    if (r) { S.flash = [h("div", { class: "notice" }, `Added ${r.video_id}: ${r.width}×${r.height}, ${fmt(r.frame_count)} frames.`), r.notes.map(n => h("div", { class: "notice warn" }, n))]; render(); }
+  };
+  const rootsBox = h("div");
+  const paintRoots = () => rootsBox.replaceChildren(roots.length ? roots.map(r => h("div", { class: "row" }, h("span", { class: "mono" }, r), h("button", { class: "small", onclick: async () => { roots.splice(roots.indexOf(r), 1); await saveRoots(); } }, "Remove"))) : h("span", { class: "muted" }, "None. Videos are looked up where the dataset recorded them."));
+  const saveRoots = async () => { if (await attempt(() => POST("/api/roots", { roots }))) { paintRoots(); render(); } };
+  paintRoots();
+  main.replaceChildren(h("div", { class: "page" }, h("h1", {}, "Videos"), S.flash || [],
+    h("p", { class: "muted" }, "The dataset stores facts about each video, never the pixels. Frames are read from the file on this computer."),
+    h("div", { class: "card" }, h("h2", {}, "Add a video"),
+      h("div", { class: "row", style: "margin-bottom:8px" }, path, S.session.can_browse_files ? h("button", { onclick: () => pickFolder(path.value.replace(/[^\\/]*$/, ""), p => { path.value = p; if (!vid.value) vid.value = ""; }, true) }, "Browse") : null),
+      vid, h("div", { class: "row", style: "margin:8px 0" }, h("label", { class: "row tight" }, hash, "Fingerprint the file"), h("label", { class: "row tight" }, index, "Read keyframes and timestamps")),
+      h("button", { class: "primary", onclick: e => add(e.target) }, "Add video"), pbox),
+    h("div", { class: "card" }, h("h2", {}, `${videos.length} video${videos.length === 1 ? "" : "s"}`),
+      videos.length ? h("table", {}, h("thead", {}, h("tr", {}, ["Video", "Size", "fps", "Frames", "File", "Index", "Fingerprint", ""].map(t => h("th", {}, t)))),
+        h("tbody", {}, videos.map(v => h("tr", {}, h("td", {}, h("a", { href: "#/video/" + encodeURIComponent(v.video_id) }, v.video_id)), h("td", {}, `${v.width}×${v.height}`),
+          h("td", {}, v.fps + (v.is_vfr ? " variable" : "")), h("td", {}, fmt(v.frame_count)), h("td", {}, v.file_found ? tag("found", "ok") : tag("not found", "warn")),
+          h("td", {}, v.has_index ? tag("yes", "ok") : tag("no", "warn")), h("td", {}, v.has_hash ? tag("yes", "ok") : tag("no", "warn")),
+          h("td", { class: "right" }, h("div", { class: "row tight", style: "justify-content:flex-end" }, h("button", { class: "small", onclick: () => checkDialog(v) }, "Check"),
+            h("button", { class: "small", onclick: async () => { const pb = progressBox(); const close = modal("Index " + v.video_id, pb, []); const r = await runJob("index", { video_ids: [v.video_id], force: true }, pb.update); close(); if (r) { const x = r.results[0]; toast(x.ok ? `Indexed ${v.video_id}: keyframe every ${x.keyframe_median} frames.` : x.error, !x.ok); render(); } } }, "Index"))))))) : h("div", { class: "empty" }, "No videos yet. Add one above.")),
+    h("div", { class: "card quiet" }, h("h2", {}, "Where your videos are"),
+      h("p", { class: "muted" }, "If files moved, add the folder they are in. It is searched by file name, for this session only."), rootsBox,
+      S.session.can_browse_files ? h("button", { style: "margin-top:8px", onclick: () => pickFolder("", async p => { roots.push(p); await saveRoots(); }) }, "Add a folder") : null),
+    cacheCard()));
+  S.flash = null;
 }
+function cacheCard() {
+  const fmtSel = h("select", {}, ["jpg", "png"].map(f => h("option", { value: f }, f))), q = h("input", { type: "number", value: 95, min: 1, max: 100, style: "width:80px" }),
+    frames = h("select", {}, [["annotated", "only frames with annotations"], ["all", "every frame"]].map(([v, t]) => h("option", { value: v }, t))), out = h("div");
+  return h("details", { class: "card quiet" }, h("summary", { style: "cursor:pointer;font-weight:700" }, "Frame cache"),
+    h("p", { class: "muted" }, "Optional. Saves decoded frames as pictures so training does not decode video again. It can be rebuilt at any time."),
+    h("div", { class: "row" }, "Save", frames, "as", fmtSel, "quality", q, h("button", { onclick: async e => {
+      e.target.disabled = true; const pb = progressBox(); out.replaceChildren(pb);
+      const r = await runJob("cache", { format: fmtSel.value, quality: +q.value, frames: frames.value, release: S.info.releases.length ? "latest" : "none" }, pb.update);
+      e.target.disabled = false; out.replaceChildren(r ? h("div", { class: "notice" }, `Wrote ${fmt(r.written)} frames (${r.megabytes} MB) in ${r.seconds} s, skipped ${fmt(r.skipped)} that were already there. Folder: ${r.out}`) : "");
+    } }, "Build cache")), out);
+}
+
+/* ---------- labels ---------- */
+async function pageLabels(main) {
+  const { labels } = await GET("/api/labels");
+  const input = h("input", { type: "text", placeholder: "new labels, separated by commas" });
+  const add = async () => { if (!input.value.trim()) return; if (await attempt(() => POST("/api/labels", { names: [input.value] }), "Labels added")) { await refreshInfo(); render(); } };
+  input.addEventListener("keydown", e => { if (e.key === "Enter") add(); });
+  main.replaceChildren(h("div", { class: "page" }, h("h1", {}, "Labels"),
+    h("p", { class: "muted" }, "Every annotation uses a name from this list, which keeps spelling consistent. Labels can be added here; renaming or removing one is not supported yet."),
+    h("div", { class: "card" }, labels.length ? h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Label"), h("th", { class: "num" }, "Annotations"))),
+      h("tbody", {}, labels.map(l => h("tr", {}, h("td", {}, dot(l.name), l.name), h("td", { class: "num" }, fmt(l.count)))))) : h("div", { class: "empty" }, "No labels yet. Add the first one below."),
+      h("div", { class: "row", style: "margin-top:12px" }, h("div", { style: "flex:1;max-width:420px" }, input), h("button", { class: "primary", onclick: add }, "Add labels")))));
+}
+
+/* ---------- views ---------- */
+function regionText(v) { return v.region ? `${v.region.x},${v.region.y}  ${v.region.width}×${v.region.height}` : "whole frame"; }
+function framesText(v) { return (v.frame_ranges || (v.frame_range ? [v.frame_range] : [])).map(r => r.join("–")).join(", ") || "all"; }
+function deriveDialog(v) {
+  const labels = h("select", { multiple: true, size: Math.min(6, Math.max(2, S.info.labels.length)) }, S.info.labels.map(l => h("option", { value: l.name }, l.name)));
+  const out = h("div");
+  const call = async (dry) => {
+    const sel = [...labels.selectedOptions].map(o => o.value);
+    const r = await attempt(() => POST("/api/views/derive", { video_id: v.video_id, view_id: v.view_id, labels: sel.length ? sel : null, dry_run: dry }));
+    if (!r) return;
+    const facts = Object.entries(r).filter(([k, x]) => !["ids", "dry_run", "copied"].includes(k) && typeof x !== "object").map(([k, x]) => `${k.replace(/_/g, " ")}: ${x}`);
+    out.replaceChildren(h("div", { class: "notice" }, dry ? `${fmt(r.copied)} rows would be copied into this view.` : `Copied ${fmt(r.copied)} rows into this view.`), facts.length ? h("p", { class: "muted" }, facts.join("; ")) : null);
+    if (!dry) await refreshInfo();
+  };
+  modal(`Copy whole-frame annotations into ${v.view_id}`, h("div", {}, h("p", { class: "muted" }, "Copies rows that lie inside this view's region and time windows. The originals stay. Running it again copies only what is new. Pick labels to limit it (none picked: all)."),
+    labels, h("div", { class: "row", style: "margin-top:10px" }, h("button", { onclick: () => call(true) }, "Preview"), h("button", { class: "primary", onclick: () => call(false) }, "Copy rows")), out), [{ text: "Close" }]);
+}
+async function pageViews(main) {
+  await refreshInfo();
+  const { views } = await GET("/api/views");
+  const videos = S.info.videos;
+  main.replaceChildren(h("div", { class: "page" }, h("h1", {}, "Views"),
+    h("p", { class: "muted" }, "A view is a named crop and set of time windows on one video, such as a camera region or the winter frames. No new video is made; annotations stay in the full frame's coordinates."),
+    h("div", { class: "card" }, views.length ? h("table", {}, h("thead", {}, h("tr", {}, ["View", "Video", "Region", "Resized to", "Frames", "Labels", ""].map(t => h("th", {}, t)))),
+      h("tbody", {}, views.map(v => h("tr", {}, h("td", {}, h("a", { href: `#/video/${encodeURIComponent(v.video_id)}?view=${encodeURIComponent(v.view_id)}` }, v.view_id)), h("td", {}, v.video_id), h("td", { class: "mono" }, regionText(v)),
+        h("td", { class: "mono" }, v.output_size ? v.output_size.join("×") : "–"), h("td", { class: "mono" }, framesText(v)), h("td", {}, (v.allowed_labels || ["any"]).join(", ")),
+        h("td", { class: "right" }, h("button", { class: "small", onclick: () => deriveDialog(v) }, "Copy labels in…")))))) : h("div", { class: "empty" }, videos.length ? "No views yet. Create one below." : "Add a video first, then define views on it."),
+    ), videos.length ? viewForm(videos) : null));
+}
+function viewForm(videos) {
+  const f = { vid: h("select", {}, videos.map(v => h("option", { value: v }, v))), id: h("input", { type: "text", placeholder: "view name, e.g. left_camera" }),
+    x: h("input", { type: "number", min: 0, style: "width:84px" }), y: h("input", { type: "number", min: 0, style: "width:84px" }), w: h("input", { type: "number", min: 1, style: "width:84px" }), hh: h("input", { type: "number", min: 1, style: "width:84px" }),
+    ow: h("input", { type: "number", min: 1, style: "width:84px" }), oh: h("input", { type: "number", min: 1, style: "width:84px" }), frames: h("input", { type: "text", placeholder: "e.g. 0-499, 1200-1500 (empty: all frames)" }) };
+  const wrap = h("div", { class: "crop-wrap" }), cv = h("canvas"), allowed = h("select", { multiple: true, size: 4 }, S.info.labels.map(l => h("option", { value: l.name }, l.name)));
+  let img = null, drag = null;
+  const rect = () => { const x = +f.x.value, y = +f.y.value, w = +f.w.value, hh = +f.hh.value; return w > 0 && hh > 0 ? { x, y, w, hh } : null; };
+  const paint = () => {
+    const x = cv.getContext("2d"); x.clearRect(0, 0, cv.width, cv.height);
+    if (img) x.drawImage(img, 0, 0); else { x.fillStyle = "#2a3140"; x.fillRect(0, 0, cv.width, cv.height); }
+    const r = rect(); if (!r) return;
+    x.fillStyle = "#0009"; x.beginPath(); x.rect(0, 0, cv.width, cv.height); x.rect(r.x, r.y, r.w, r.hh); x.fill("evenodd");
+    x.strokeStyle = "#ff4fa6"; x.lineWidth = Math.max(2, cv.width / 300); x.strokeRect(r.x, r.y, r.w, r.hh);
+  };
+  const load = async () => {
+    const m = (await GET("/api/videos/" + encodeURIComponent(f.vid.value))).metadata;
+    img = null; cv.width = m.rotation % 180 ? m.height : m.width; cv.height = m.rotation % 180 ? m.width : m.height; paint();
+    const im = new Image(); im.onload = () => { img = im; cv.width = im.naturalWidth; cv.height = im.naturalHeight; paint(); }; im.src = `/api/frame/${encodeURIComponent(f.vid.value)}/0`;
+  };
+  const pos = e => { const b = cv.getBoundingClientRect(); return [Math.round((e.clientX - b.left) * cv.width / b.width), Math.round((e.clientY - b.top) * cv.height / b.height)]; };
+  cv.addEventListener("pointerdown", e => { drag = pos(e); cv.setPointerCapture(e.pointerId); });
+  cv.addEventListener("pointermove", e => { if (!drag) return; const [px, py] = pos(e); f.x.value = Math.max(0, Math.min(drag[0], px)); f.y.value = Math.max(0, Math.min(drag[1], py)); f.w.value = Math.abs(px - drag[0]); f.hh.value = Math.abs(py - drag[1]); paint(); });
+  cv.addEventListener("pointerup", () => { drag = null; });
+  for (const k of ["x", "y", "w", "hh"]) f[k].addEventListener("input", paint);
+  f.vid.addEventListener("change", load);
+  wrap.append(cv); load();
+  const create = async () => {
+    const spec = { view_id: f.id.value.trim(), video_id: f.vid.value };
+    const r = rect(); if (r) spec.region = { x: r.x, y: r.y, width: r.w, height: r.hh };
+    if (f.ow.value && f.oh.value) spec.output_size = [+f.ow.value, +f.oh.value];
+    const fr = f.frames.value.split(",").map(t => t.trim()).filter(Boolean).map(t => t.split("-").map(Number));
+    if (fr.length === 1) spec.frame_range = fr[0]; else if (fr.length) spec.frame_ranges = fr;
+    const lab = [...allowed.selectedOptions].map(o => o.value); if (lab.length) spec.allowed_labels = lab;
+    if (!spec.view_id) { toast("Give the view a name.", true); return; }
+    if (await attempt(() => POST("/api/views", spec), "View created")) { await refreshInfo(); render(); }
+  };
+  return h("div", { class: "card" }, h("h2", {}, "Create a view"),
+    h("div", { class: "row", style: "margin-bottom:10px" }, f.vid, h("div", { style: "flex:1;min-width:200px" }, f.id)),
+    h("p", { class: "muted" }, "Drag on the first frame to choose the region, or type the numbers (pixels, as the video is displayed)."), wrap,
+    h("div", { class: "row", style: "margin:10px 0" }, "x", f.x, "y", f.y, "width", f.w, "height", f.hh),
+    h("div", { class: "row", style: "margin-bottom:10px" }, "Resize the crop to", f.ow, "×", f.oh, h("span", { class: "muted" }, "(optional)")),
+    f.frames, h("p", { class: "muted", style: "margin:10px 0 4px" }, "Limit the labels allowed in this view (optional; hold Ctrl or Cmd to pick several):"), allowed,
+    h("div", { style: "margin-top:12px" }, h("button", { class: "primary", onclick: create }, "Create view")));
+}
+
 
 /* ---------- viewer ---------- */
 let V = null;
@@ -579,6 +767,9 @@ async function boot2() {
 async function boot() {
   S.author = localStorage.getItem("vl_author") || "";
   $("#changes-btn").addEventListener("click", toggleDrawer);
+  $("#commit-btn").addEventListener("click", () => setDrawer(true));
+  $("#undo-btn").addEventListener("click", () => draftOp("/api/draft/undo").then(() => render()));
+  $("#redo-btn").addEventListener("click", () => draftOp("/api/draft/redo").then(() => render()));
   $("#jobs-btn").addEventListener("click", showJobs);
   $("#author-btn").addEventListener("click", () => askAuthor(true));
   S.session = await GET("/api/session");

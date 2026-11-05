@@ -1,6 +1,6 @@
 # Design: the local web interface
 
-Status: **stage 1 is built** (server, draft and history, jobs, every route, and the read-only pages plus track review); stages 2 to 4 are
+Status: **stages 1 and 2 are built** (server, draft and history, jobs, every route, and pages for browsing, review, validation, releases, history, videos, labels and views); stages 3 and 4 are
 planned. This page is the plan the interface is built and tested against; the user guide is [Web interface](ui.md). If the behaviour here
 and the code ever disagree, one of them is a bug.
 
@@ -148,6 +148,13 @@ browser. The page is a client of this interface, so a script could use it too. T
 | stage | state |
 |---|---|
 | 1. server, draft, history, jobs, routes, tests; Overview, Videos, Viewer (read only plus approve, reject and delete of rows), Review, Validation, Releases, History, Changes panel | built |
-| 2. builder pages (New dataset beyond the first screen, Labels page, add video, video health, Views, derive-view) | routes and tests exist; pages not built |
+| 2. builder pages: Labels, Videos (add, check, index, folders for moved files, frame cache), Views (draw a region, create, copy labels in with a preview) | built |
 | 3. drawing: boxes and spans, then masks | not built |
 | 4. polish and the sample inspector page | the sample inspector is on the Releases page; the rest is not built |
+
+## Visual identity
+
+Time is what this data is made of, so time-based things are drawn as horizontal bands on a shared frame ruler: the Overview "score" (one
+band per video, coloured by review status), the viewer timeline, and the draft tape along the bottom of every page. The palette is cool
+grey-green paper and ink-blue, with ultramarine for selection and pink reserved for changes that are not committed yet. One bundled
+typeface (Bricolage Grotesque) carries the headings. Both a light and a dark theme follow the system setting.

@@ -331,3 +331,19 @@ def test_shared_server_accepts_its_own_address_but_not_other_sites(tmp_path):
     assert c.get("/api/session").status_code == 200
     assert c.get("/api/session", headers={"Origin": "http://evil.example"}).status_code == 403
     assert c.get("/api/session", headers={"Origin": "http://192.168.1.5:9000"}).status_code == 200
+
+
+def test_timeline_has_status_bands_and_roots_find_moved_videos(env, tmp_path):
+    c, ds, st = env
+    tl = c.get("/api/timeline/clip").json()
+    assert set(tl["by_status"]) >= {"approved", "unreviewed", "rejected"}
+    assert [sum(x) for x in zip(*tl["by_status"].values())] == tl["density"]
+    if HAVE_FFMPEG:
+        moved = tmp_path / "elsewhere"
+        moved.mkdir()
+        (tmp_path / "clip.mp4").rename(moved / "clip.mp4")
+        assert c.get("/api/videos").json()["videos"][0]["file_found"] is False
+        assert c.get("/api/frame/clip/1").status_code == 404
+        assert post(c, "/api/roots", {"roots": [str(moved)]}).json()["roots"] == [str(moved.resolve())]
+        assert c.get("/api/videos").json()["videos"][0]["file_found"] is True
+        assert c.get("/api/frame/clip/1").status_code == 200

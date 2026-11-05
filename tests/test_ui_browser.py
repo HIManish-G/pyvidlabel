@@ -69,7 +69,7 @@ def page(server):
 
 def test_overview_shows_counts(page):
     pg, ds, base = page
-    pg.wait_for_selector("h1:has-text('Overview')")
+    pg.wait_for_selector(".figures")
     assert "Labels" in pg.inner_text("main") and "clip" in pg.inner_text("main")
     assert not pg.errors
 
@@ -140,4 +140,56 @@ def test_validation_and_release_pages(page):
     pg.click("button:has-text('Build release')")
     pg.wait_for_selector(".notice:has-text('Built')", timeout=20000)
     pg.wait_for_selector("tbody tr:has-text('latest')")
+    assert not pg.errors
+
+
+def test_builder_pages_labels_views_derive_and_add_video(page, tmp_path):
+    pg, ds, base = page
+    pg.goto(f"{base}/#/labels")
+    pg.reload()
+    pg.fill("input[type=text]", "bike, bus")
+    pg.click("button:has-text('Add labels')")
+    pg.wait_for_selector(".toast:has-text('Labels added')")
+    pg.wait_for_selector("td:has-text('bike')")
+    assert {"bike", "bus"} <= {l.name for l in ds.vocab.labels}
+    # create a view by typing the region, then copy whole-frame rows into it with a preview first
+    pg.goto(f"{base}/#/views")
+    pg.reload()
+    pg.wait_for_selector("text=Create a view")
+    pg.fill("input[placeholder^='view name']", "left_half")
+    pg.fill("input[type=number] >> nth=0", "0")
+    pg.fill("input[type=number] >> nth=1", "0")
+    pg.fill("input[type=number] >> nth=2", "48")
+    pg.fill("input[type=number] >> nth=3", "64")
+    pg.click("button:has-text('Create view')")
+    pg.wait_for_selector(".toast:has-text('View created')")
+    assert "left_half" in ds.view_ids()
+    pg.click("button:has-text('Copy labels in')")
+    pg.click(".modal button:has-text('Preview')")
+    pg.wait_for_selector(".modal .notice:has-text('would be copied')")
+    assert ds.annotations("clip", view_id=["left_half"]).num_rows == 0       # a preview writes nothing
+    pg.click(".modal button:has-text('Copy rows')")
+    pg.wait_for_selector(".modal .notice:text-matches('^Copied')")
+    assert ds.annotations("clip", view_id=["left_half"]).num_rows > 0
+    # add a second video from the Videos page, then check it
+    vp = make_video(tmp_path / "second.mp4", n=30)
+    pg.goto(f"{base}/#/browse")
+    pg.reload()
+    pg.fill("input[placeholder='path to a video file']", str(vp))
+    pg.fill("input[placeholder^='name']", "second")
+    pg.click("button:has-text('Add video')")
+    pg.wait_for_selector(".notice:has-text('Added second')", timeout=30000)
+    assert "second" in ds.video_ids()
+    pg.click("tr:has-text('second') button:has-text('Check')")
+    pg.click(".modal button:has-text('Run check')")
+    pg.wait_for_selector(".modal :text('matches the dataset')", timeout=30000)
+    assert not pg.errors
+
+
+def test_overview_score_has_a_band_per_video(page):
+    pg, ds, base = page
+    pg.goto(f"{base}/#/overview")
+    pg.reload()
+    pg.wait_for_selector(".score-row canvas")
+    assert pg.locator(".score-row").count() >= 1
     assert not pg.errors
