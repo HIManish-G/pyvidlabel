@@ -105,9 +105,46 @@ def choose_frames(rows: Sequence[dict], frame_count: int, limit: int = 12) -> li
     return [pool[i] for i in sorted(set(idx.tolist()))]
 
 
+def _dashed_rect(img, p0, p1, color, t, cv2, dash: int = 10) -> None:
+    (x0, y0), (x1, y1) = p0, p1
+    for (ax, ay), (bx, by) in (((x0, y0), (x1, y0)), ((x1, y0), (x1, y1)), ((x1, y1), (x0, y1)), ((x0, y1), (x0, y0))):
+        n = max(abs(bx - ax), abs(by - ay))
+        for k in range(0, n, dash * 2):
+            e = min(k + dash, n)
+            cv2.line(img, (ax + (bx - ax) * k // n, ay + (by - ay) * k // n), (ax + (bx - ax) * e // n, ay + (by - ay) * e // n), color, t)
+
+
+def _place_label(size: tuple[int, int], base: int, box: tuple[int, int, int, int], taken: list[tuple[int, int, int, int]],
+                 shape: tuple[int, int]) -> tuple[int, int]:
+    """Text origin (bottom-left) for a label of `size`: above the box, else inside its top, else below; the first spot that
+    stays inside the frame and does not cover an earlier label. If none is free, the first spot nudged down until it fits."""
+    (w, h), (x0, y0, x1, y1) = size, box
+    H, W = shape
+    x = min(max(x0 + 4, 0), max(W - w - 2, 0))
+    options = [y0 - 6, y0 + h + 4, y1 + h + 4]
+    def rect(y): return (x, y - h - 2, x + w, y + base + 2)
+    def free(y): return y - h - 2 >= 0 and y + base + 2 <= H and not any(
+        rect(y)[0] < q[2] and rect(y)[2] > q[0] and rect(y)[1] < q[3] and rect(y)[3] > q[1] for q in taken)
+    for y in options:
+        if free(y):
+            return x, y
+    y = min(max(options[0], h + 2), H - base - 2)
+    for _ in range(40):
+        if free(y):
+            break
+        y += h + 4
+        if y + base + 2 > H:
+            y = h + 2
+            break
+    return x, y
+
+
 def draw_annotations(frame: np.ndarray, rows: Iterable[dict], frame_index: int, *, view: View | None = None,
                      style: PreviewStyle | None = None) -> np.ndarray:
-    """Return a copy of an RGB frame with the annotations active at `frame_index` drawn on it."""
+    """Return a copy of an RGB frame with the annotations active at `frame_index` drawn on it.
+
+    Rejected rows are drawn dashed, dimmed and prefixed `rej`, under the others. Labels are kept inside the frame and moved
+    so that they do not cover each other. Span markers are listed as captions at the top left."""
     cv2 = _cv2()
     st = style or PreviewStyle()
     auto = max(0.55, frame.shape[1] / 1600)
@@ -115,43 +152,60 @@ def draw_annotations(frame: np.ndarray, rows: Iterable[dict], frame_index: int, 
     t = st.thickness or max(2, round(frame.shape[1] / 500))
     out = np.ascontiguousarray(frame.copy())
     banner: list[tuple[str, tuple[int, int, int]]] = []
-    for r in rows:
-        if not (r["start_frame"] <= frame_index <= r["end_frame"]):
-            continue
+    active = [r for r in rows if r["start_frame"] <= frame_index <= r["end_frame"]]
+    active.sort(key=lambda r: r.get("status") != "rejected")                    # rejected first, so the others draw on top
+    pending: list[tuple[str, tuple[int, int, int], tuple[int, int, int, int], bool]] = []
+    for r in active:
+        rejected = r.get("status") == "rejected"
         color = st.color_for(r["label"])
-        text = r["label"] + (f"#{r['track_id']}" if r.get("track_id") is not None else "")
+        if rejected:
+            color = tuple(int(c * 0.45 + 120 * 0.55) for c in color)           # washed out
+        text = ("rej " if rejected else "") + r["label"] + (f"#{r['track_id']}" if r.get("track_id") is not None else "")
         if r.get("confidence") is not None:
             text += f" {r['confidence']:.2f}"
         if r["kind"] == "marker":
             span = f"{r['start_frame']}" if r["start_frame"] == r["end_frame"] else f"{r['start_frame']}-{r['end_frame']}"
-            banner.append((f"{r['label']} [{span}]", color))
+            banner.append((("rej " if rejected else "") + f"{r['label']} [{span}]", color))
             continue
         if r["kind"] == "mask" and r.get("mask") is not None:
             m = masks.decode(r["mask"])
             if view is not None:
                 m = crop_mask_to_view(m, view)
             if m.shape[:2] == out.shape[:2]:
-                out[m] = ((1 - st.mask_opacity) * out[m] + st.mask_opacity * np.array(color)).astype(np.uint8)
+                a = st.mask_opacity * (0.4 if rejected else 1.0)
+                out[m] = ((1 - a) * out[m] + a * np.array(color)).astype(np.uint8)
         box = (r["x0"], r["y0"], r["x1"], r["y1"])
         if None in box:
             continue
         if view is not None:
             box = view.to_view_box(box)
         x0, y0, x1, y1 = (int(round(v)) for v in box)
-        if st.outline:
-            cv2.rectangle(out, (x0, y0), (x1 - 1, y1 - 1), (0, 0, 0), t + 2)  # dark outline so it shows on any colour
-        cv2.rectangle(out, (x0, y0), (x1 - 1, y1 - 1), color, t)
-        if st.show_labels:
-            pos = (x0 + 4, y0 - 8 if y0 > 24 else y0 + int(24 * scale))
+        if rejected:
             if st.outline:
-                cv2.putText(out, text, pos, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), t + 2, cv2.LINE_AA)
-            cv2.putText(out, text, pos, cv2.FONT_HERSHEY_SIMPLEX, scale, color, max(1, t - 1), cv2.LINE_AA)
+                _dashed_rect(out, (x0, y0), (x1 - 1, y1 - 1), (0, 0, 0), t + 2, cv2)
+            _dashed_rect(out, (x0, y0), (x1 - 1, y1 - 1), color, t, cv2)
+        else:
+            if st.outline:
+                cv2.rectangle(out, (x0, y0), (x1 - 1, y1 - 1), (0, 0, 0), t + 2)  # dark outline so it shows on any colour
+            cv2.rectangle(out, (x0, y0), (x1 - 1, y1 - 1), color, t)
+        if st.show_labels:
+            pending.append((text, color, (x0, y0, x1, y1), rejected))
+    taken: list[tuple[int, int, int, int]] = []
+    th_b = max(1, round(scale * 1.8))
     for i, (text, color) in enumerate(banner):
-        th = max(1, round(scale * 1.8))
+        (w, h), base = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, th_b + 3)
         y = int(24 * scale) + int(30 * scale) * i
         if st.outline:
-            cv2.putText(out, text, (8, y), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), th + 3, cv2.LINE_AA)
-        cv2.putText(out, text, (8, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, th, cv2.LINE_AA)
+            cv2.putText(out, text, (8, y), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), th_b + 3, cv2.LINE_AA)
+        cv2.putText(out, text, (8, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, th_b, cv2.LINE_AA)
+        taken.append((8, y - h - 2, 8 + w, y + base + 2))
+    for text, color, box, rejected in sorted(pending, key=lambda q: q[3]):
+        (w, h), base = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, t + 2)
+        x, y = _place_label((w, h), base, box, taken, out.shape[:2])
+        taken.append((x, y - h - 2, x + w, y + base + 2))
+        if st.outline:
+            cv2.putText(out, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), t + 2, cv2.LINE_AA)
+        cv2.putText(out, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, max(1, t - 1), cv2.LINE_AA)
     return out
 
 

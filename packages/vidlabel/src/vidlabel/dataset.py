@@ -191,7 +191,7 @@ class Dataset:
             w, h = meta.display_size
             if view.region.x + view.region.width > w or view.region.y + view.region.height > h:
                 raise ValueError(f"view region extends outside the {w}x{h} video")
-        if view.frame_range and meta.frame_count and view.frame_range[1] >= meta.frame_count:
+        if view.ranges and meta.frame_count and view.ranges[-1][1] >= meta.frame_count:
             raise ValueError(f"view frame_range ends beyond the video ({meta.frame_count} frames)")
         if view.allowed_labels is not None:
             unknown = sorted(set(view.allowed_labels) - {l.name for l in self.vocab.labels})
@@ -327,28 +327,41 @@ class Dataset:
             out.append(r)
         return out
 
-    def delete_annotations(self, video_id: str, annotation_ids: Iterable[int]) -> int:
-        """Remove annotations of one video by id. Returns how many rows were removed."""
+    def _check_ids_exist(self, t: pa.Table, video_id: str, ids: list[int], missing: str) -> None:
+        if missing not in ("raise", "ignore"):
+            raise ValueError("missing must be 'raise' or 'ignore'")
+        if missing == "raise" and ids:
+            gone = sorted(set(ids) - set(t.column("annotation_id").to_pylist()))
+            if gone:
+                raise KeyError(f"no annotation with id {gone[:5]}{' ...' if len(gone) > 5 else ''} in video '{video_id}' "
+                               f"({len(gone)} of {len(ids)} ids; pass missing='ignore' to skip ids that are not there)")
+
+    def delete_annotations(self, video_id: str, annotation_ids: Iterable[int], *, missing: str = "raise") -> int:
+        """Remove annotations of one video by id. Returns how many rows were removed. Ids that are not in this video raise
+        KeyError (and nothing is removed) unless `missing="ignore"`."""
+        self.video(video_id)
+        ids = [int(i) for i in annotation_ids]
         t = self._existing(video_id)
-        keep = pc.invert(pc.is_in(t.column("annotation_id"), value_set=pa.array(list(annotation_ids), type=pa.int64())))
+        self._check_ids_exist(t, video_id, ids, missing)
+        keep = pc.invert(pc.is_in(t.column("annotation_id"), value_set=pa.array(ids, type=pa.int64())))
         out = t.filter(keep)
         n = t.num_rows - out.num_rows
         if n:
             write_parquet(out, self._ann_path(video_id))
         return n
 
-    def update_annotations(self, video_id: str, annotation_ids: Iterable[int], **values: Any) -> int:
-        """Set columns (e.g. status='approved', label='x') on the given annotations. Returns rows changed."""
+    def update_annotations(self, video_id: str, annotation_ids: Iterable[int], *, missing: str = "raise", **values: Any) -> int:
+        """Set columns (e.g. status='approved', label='x') on the given annotations. Returns rows changed. Ids that are not in
+        this video raise KeyError (and nothing changes) unless `missing="ignore"`; giving no column to change is an error."""
+        self.video(video_id)
+        if not values:
+            raise ValueError("give at least one column to change, e.g. status='approved'")
         bad = set(values) - (set(COLUMN_NAMES) - _IMMUTABLE)
         if bad:
             hint = "; set x0, y0, x1, y1 instead of box" if "box" in bad else ""
             raise ValueError(f"cannot update {sorted(bad)}{hint}")
-        t = self._existing(video_id)
-        sel = pc.is_in(t.column("annotation_id"), value_set=pa.array(list(annotation_ids), type=pa.int64()))
-        n = int(pc.sum(sel.cast(pa.int8())).as_py() or 0)
-        if not n:
-            return 0
-        for k, v in values.items():
+        converted = {}
+        for k, v in values.items():                       # check the values before looking for rows, so a typo is never a quiet 0
             if k == "extra" and not isinstance(v, str) and v is not None:
                 v = _json_extra(v)
             elif k == "kind":
@@ -357,6 +370,15 @@ class Dataset:
                 v = _origin_value(v)
             elif k == "status":
                 v = _enum_value(v, Status, k)
+            converted[k] = v
+        ids = [int(i) for i in annotation_ids]
+        t = self._existing(video_id)
+        self._check_ids_exist(t, video_id, ids, missing)
+        sel = pc.is_in(t.column("annotation_id"), value_set=pa.array(ids, type=pa.int64()))
+        n = int(pc.sum(sel.cast(pa.int8())).as_py() or 0)
+        if not n:
+            return 0
+        for k, v in converted.items():
             idx = t.schema.get_field_index(k)
             new_col = pc.if_else(sel, pa.scalar(v, type=t.schema.field(k).type), t.column(k))
             t = t.set_column(idx, t.schema.field(k), new_col)
@@ -369,16 +391,111 @@ class Dataset:
         write_parquet(t.sort_by([("start_frame", "ascending"), ("annotation_id", "ascending")]), self._ann_path(video_id))
         return n
 
+    def derive_view_rows(self, video_id: str, view_id: str, *, labels: Sequence[str] | None = None,
+                         origins: Sequence[str] | None = None, statuses: Sequence[str] = ("unreviewed", "approved")) -> dict[str, Any]:
+        """Copy whole-frame rows into a view, for the rows that belong there: frames inside the view's time windows, box or mask
+        entirely inside its region, label allowed in the view. Each copy keeps its columns (including `track_id`), gets the
+        view's `view_id` and a new `annotation_id`, and records its source in `extra["derived_from"]`, so running this again
+        copies only what is new. The originals stay. Rows that only partly overlap the region are not copied (cutting a box
+        or mask would change it): they are counted in `skipped_partial`.
+
+        Returns `copied`, `ids`, `already_derived`, and the skip counts `skipped_partial`, `skipped_outside`, `skipped_label`,
+        `skipped_frames`. Whole-frame samples (no `view_id`) then see both the original and the copy: build whole-frame releases
+        with `build(view_ids=[None])` to leave the copies out."""
+        view = self.view(view_id)
+        if view.video_id != video_id:
+            raise ValueError(f"view '{view_id}' belongs to video '{view.video_id}', not '{video_id}'")
+        have = set()
+        for r in self.annotations(video_id, view_id=[view_id], columns=["extra"]).column("extra").to_pylist():
+            if r:
+                try:
+                    src = json.loads(r).get("derived_from")
+                except (ValueError, AttributeError):
+                    src = None
+                if src is not None:
+                    have.add(int(src))
+        src_rows = self.annotations(video_id, view_id=[None], label=labels, origin=origins, status=list(statuses)).to_pylist()
+        stats = {"already_derived": 0, "skipped_partial": 0, "skipped_outside": 0, "skipped_label": 0, "skipped_frames": 0}
+        rows: list[dict] = []
+        eps = 0.5
+        for r in src_rows:
+            if r["annotation_id"] in have:
+                stats["already_derived"] += 1
+                continue
+            if not view.contains_frames(r["start_frame"], r["end_frame"]):
+                stats["skipped_frames"] += 1
+                continue
+            if view.allowed_labels is not None and r["label"] not in view.allowed_labels:
+                stats["skipped_label"] += 1
+                continue
+            if view.region is not None and r["kind"] != "marker" and r["x0"] is not None:
+                g = view.region
+                inside = (r["x0"] >= g.x - eps and r["y0"] >= g.y - eps and r["x1"] <= g.x + g.width + eps
+                          and r["y1"] <= g.y + g.height + eps)
+                if not inside:
+                    overlaps = r["x0"] < g.x + g.width and r["x1"] > g.x and r["y0"] < g.y + g.height and r["y1"] > g.y
+                    stats["skipped_partial" if overlaps else "skipped_outside"] += 1
+                    continue
+            row = {k: v for k, v in r.items() if v is not None and k not in ("annotation_id", "video_id", "extra")}
+            extra = json.loads(r["extra"]) if r.get("extra") else {}
+            extra["derived_from"] = r["annotation_id"]
+            row.update(view_id=view_id, extra=extra)
+            rows.append(row)
+        ids = self.add_annotations(rows, video_id) if rows else []
+        return {"copied": len(ids), "ids": ids, **stats}
+
+    # ---- tracks: review one object at a time ----
+    def _track_ids(self, video_id: str, track_id: int, view_id: str | None) -> list[int]:
+        t = self.annotations(video_id, track_id=track_id, view_id=[view_id], columns=["annotation_id"])
+        ids = t.column("annotation_id").to_pylist()
+        if not ids:
+            where = f"view '{view_id}'" if view_id else "the whole frame (no view)"
+            raise KeyError(f"video '{video_id}' has no track {track_id} in {where}; track ids are per video and view, "
+                           f"see tracks('{video_id}')")
+        return ids
+
+    def tracks(self, video_id: str, *, view_id: str | None = None) -> list[dict[str, Any]]:
+        """One summary row per track of this video and view (`view_id=None`: whole-frame rows), sorted by track id: `track_id`,
+        `labels`, `n_rows`, `first_frame`, `last_frame`, `mean_confidence` (None if unscored), `statuses` (counts) and `origins`."""
+        t = self.annotations(video_id, view_id=[view_id], columns=["track_id", "label", "start_frame", "end_frame", "confidence",
+                                                                   "status", "origin"]).to_pylist()
+        groups: dict[int, list[dict]] = {}
+        for r in t:
+            if r["track_id"] is not None:
+                groups.setdefault(r["track_id"], []).append(r)
+        out = []
+        for tid in sorted(groups):
+            rows = groups[tid]
+            conf = [r["confidence"] for r in rows if r["confidence"] is not None]
+            out.append({"track_id": tid, "labels": sorted({r["label"] for r in rows}), "n_rows": len(rows),
+                        "first_frame": min(r["start_frame"] for r in rows), "last_frame": max(r["end_frame"] for r in rows),
+                        "mean_confidence": sum(conf) / len(conf) if conf else None,
+                        "statuses": dict(Counter(r["status"] for r in rows)), "origins": sorted({r["origin"] for r in rows})})
+        return out
+
+    def update_track(self, video_id: str, track_id: int, *, view_id: str | None = None, **values: Any) -> int:
+        """Change columns on every row of one track at once, e.g. `update_track("clip", 7, status="rejected")`. A track id means
+        one object only within one video and view, so pass `view_id` for a track made in a view. KeyError if there is no such track."""
+        return self.update_annotations(video_id, self._track_ids(video_id, track_id, view_id), **values)
+
+    def delete_track(self, video_id: str, track_id: int, *, view_id: str | None = None) -> int:
+        """Remove every row of one track. To keep it out of releases without losing it, use `update_track(..., status="rejected")`."""
+        return self.delete_annotations(video_id, self._track_ids(video_id, track_id, view_id))
+
     # ---- annotations: reading ----
     def annotations(self, video_id: str | None = None, *, kind: str | Sequence[str] | None = None,
                     label: str | Sequence[str] | None = None, origin: str | Sequence[str] | None = None,
                     status: str | Sequence[str] | None = None, view_id: str | Sequence[str | None] | None = None,
+                    track_id: int | Sequence[int] | None = None,
                     frames: tuple[int, int] | None = None, columns: Sequence[str] | None = None) -> pa.Table:
         """Query annotations as a pyarrow Table. `frames=(a, b)` keeps annotations overlapping [a, b] inclusive.
 
         `view_id` keeps rows labelled in that view (or any of several). Include None in a list to also (or only)
-        get whole-frame rows that have no view, e.g. `view_id=[None]`.
+        get whole-frame rows that have no view, e.g. `view_id=[None]`. `track_id` keeps rows of those tracks; a track id means
+        one object only within one video *and* view, so combine it with `view_id`.
         """
+        if video_id is not None:
+            self.video(video_id)                      # an unknown video is an error on reads too, as it is on writes
         expr = None
 
         def add(e):
@@ -400,6 +517,8 @@ class Dataset:
             if None in vals:
                 e = pads.field("view_id").is_null() if e is None else (e | pads.field("view_id").is_null())
             add(e)
+        if track_id is not None:
+            add(pads.field("track_id").isin([int(track_id)] if isinstance(track_id, (int, np.integer)) else [int(t) for t in track_id]))
         if frames is not None:
             add((pads.field("start_frame") <= frames[1]) & (pads.field("end_frame") >= frames[0]))
         cols = list(columns) if columns else None

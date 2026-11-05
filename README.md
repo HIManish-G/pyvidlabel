@@ -71,7 +71,7 @@ Start at **[docs/index.md](docs/index.md)**.
 
 ## Status
 
-Version 0.5.0, pre-release; the name is provisional and nothing is on PyPI yet. Tested: spec and validator, reading and
+Version 0.6.0, pre-release; the name is provisional and nothing is on PyPI yet. Tested: spec and validator, reading and
 writing, views, masks, releases, the command line, frame reading and previews on real H.264 video, and the PyTorch loader.
 **Not yet verified:** Parquet against other storage at scale, several people editing one video at once, the loader on very
 large datasets or many GPUs, variable-frame-rate video in real datasets. There are **no importers or exporters** for other

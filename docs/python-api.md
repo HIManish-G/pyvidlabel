@@ -82,6 +82,7 @@ annotations(
     origin: str | Sequence[str] | None = None,
     status: str | Sequence[str] | None = None,
     view_id: str | Sequence[str | None] | None = None,
+    track_id: int | Sequence[int] | None = None,
     frames: tuple[int, int] | None = None,
     columns: Sequence[str] | None = None,
 ) -> pa.Table
@@ -90,7 +91,8 @@ annotations(
 Query annotations as a pyarrow Table. `frames=(a, b)` keeps annotations overlapping [a, b] inclusive.
 
 `view_id` keeps rows labelled in that view (or any of several). Include None in a list to also (or only)
-get whole-frame rows that have no view, e.g. `view_id=[None]`.
+get whole-frame rows that have no view, e.g. `view_id=[None]`. `track_id` keeps rows of those tracks; a track id means
+one object only within one video *and* view, so combine it with `view_id`.
 
 #### `Dataset.build`
 
@@ -111,10 +113,42 @@ Make an empty dataset folder. Raises FileExistsError if one is already there, un
 #### `Dataset.delete_annotations`
 
 ```python
-delete_annotations(video_id: str, annotation_ids: Iterable[int]) -> int
+delete_annotations(video_id: str, annotation_ids: Iterable[int], *, missing: str = 'raise') -> int
 ```
 
-Remove annotations of one video by id. Returns how many rows were removed.
+Remove annotations of one video by id. Returns how many rows were removed. Ids that are not in this video raise
+KeyError (and nothing is removed) unless `missing="ignore"`.
+
+#### `Dataset.delete_track`
+
+```python
+delete_track(video_id: str, track_id: int, *, view_id: str | None = None) -> int
+```
+
+Remove every row of one track. To keep it out of releases without losing it, use `update_track(..., status="rejected")`.
+
+#### `Dataset.derive_view_rows`
+
+```python
+derive_view_rows(
+    video_id: str,
+    view_id: str,
+    *,
+    labels: Sequence[str] | None = None,
+    origins: Sequence[str] | None = None,
+    statuses: Sequence[str] = ('unreviewed', 'approved'),
+) -> dict[str, Any]
+```
+
+Copy whole-frame rows into a view, for the rows that belong there: frames inside the view's time windows, box or mask
+entirely inside its region, label allowed in the view. Each copy keeps its columns (including `track_id`), gets the
+view's `view_id` and a new `annotation_id`, and records its source in `extra["derived_from"]`, so running this again
+copies only what is new. The originals stay. Rows that only partly overlap the region are not copied (cutting a box
+or mask would change it): they are counted in `skipped_partial`.
+
+Returns `copied`, `ids`, `already_derived`, and the skip counts `skipped_partial`, `skipped_outside`, `skipped_label`,
+`skipped_frames`. Whole-frame samples (no `view_id`) then see both the original and the copy: build whole-frame releases
+with `build(view_ids=[None])` to leave the copies out.
 
 #### `Dataset.frame_index`
 
@@ -161,13 +195,38 @@ stats() -> dict[str, Any]
 
 Counts for `vidlabel info`: totals, and breakdowns by kind, label, origin, status and view, plus one entry per video.
 
+#### `Dataset.tracks`
+
+```python
+tracks(video_id: str, *, view_id: str | None = None) -> list[dict[str, Any]]
+```
+
+One summary row per track of this video and view (`view_id=None`: whole-frame rows), sorted by track id: `track_id`,
+`labels`, `n_rows`, `first_frame`, `last_frame`, `mean_confidence` (None if unscored), `statuses` (counts) and `origins`.
+
 #### `Dataset.update_annotations`
 
 ```python
-update_annotations(video_id: str, annotation_ids: Iterable[int], **values: Any) -> int
+update_annotations(
+    video_id: str,
+    annotation_ids: Iterable[int],
+    *,
+    missing: str = 'raise',
+    **values: Any,
+) -> int
 ```
 
-Set columns (e.g. status='approved', label='x') on the given annotations. Returns rows changed.
+Set columns (e.g. status='approved', label='x') on the given annotations. Returns rows changed. Ids that are not in
+this video raise KeyError (and nothing changes) unless `missing="ignore"`; giving no column to change is an error.
+
+#### `Dataset.update_track`
+
+```python
+update_track(video_id: str, track_id: int, *, view_id: str | None = None, **values: Any) -> int
+```
+
+Change columns on every row of one track at once, e.g. `update_track("clip", 7, status="rejected")`. A track id means
+one object only within one video and view, so pass `view_id` for a track made in a view. KeyError if there is no such track.
 
 #### `Dataset.validate`
 
@@ -673,6 +732,9 @@ draw_annotations(
 
 Return a copy of an RGB frame with the annotations active at `frame_index` drawn on it.
 
+Rejected rows are drawn dashed, dimmed and prefixed `rej`, under the others. Labels are kept inside the frame and moved
+so that they do not cover each other. Span markers are listed as captions at the top left.
+
 ### `vidlabel.preview.parse_color`
 
 ```python
@@ -1062,6 +1124,7 @@ labels may be used in this view (e.g. a caption strip that only allows caption l
 | `region` | `Region | None` | none |  |
 | `output_size` | `tuple[int, int] | None` | none | (width, height) the region is resized to when shown to a pipeline. Omit if not resized. |
 | `frame_range` | `tuple[int, int] | None` | none | Inclusive [first, last] frame. |
+| `frame_ranges` | `list[tuple[int, int]] | None` | none | Several inclusive [first, last] frame ranges, in increasing order and not overlapping (e.g. every December-February). Use this or frame_range, not both. |
 | `allowed_labels` | `list[str] | None` | none | If set, annotations in this view may only use these labels. |
 | `extra` | `dict[str, Any]` | empty |  |
 
@@ -1089,7 +1152,7 @@ Dataset-level index. Lives in manifest.json.
 
 | field | type | default | description |
 |---|---|---|---|
-| `spec_version` | `str` | '0.5.0' |  |
+| `spec_version` | `str` | '0.6.0' |  |
 | `videos` | `list[str]` | empty |  |
 | `views` | `list[str]` | empty |  |
 | `vocab_version` | `str | None` | none |  |

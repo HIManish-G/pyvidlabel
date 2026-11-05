@@ -168,7 +168,7 @@ def test_draw_annotations_box_mask_marker():
     ]
     out = draw_annotations(frame, rows, 5)
     assert out is not frame and np.array_equal(frame, np.full((64, 96, 3), 100, np.uint8))  # input untouched
-    assert tuple(out[30, 10]) == label_color("thing")            # left edge of the box
+    assert tuple(out[47, 10]) == label_color("thing")            # left edge of the box (below the label)
     assert tuple(out[49, 25]) == label_color("thing")            # bottom edge (y1 - 1)
     assert not np.array_equal(out[45, 70], frame[45, 70])        # mask blended
     assert tuple(out[45, 62]) != (100, 100, 100)

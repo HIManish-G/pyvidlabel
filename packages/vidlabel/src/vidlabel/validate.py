@@ -205,6 +205,20 @@ def check_annotation_table(
     codec_bad = ~codec_null & _not_in(table, "mask_codec", [c.value for c in MaskCodec])
     report("error", "unknown_codec", f"mask_codec must be one of {[c.value for c in MaskCodec]}", codec_bad)
 
+    if size and is_mask.any():
+        # cheap, header-only: a mask encoded for another frame size is caught without decoding anything (--deep decodes)
+        heads = pc.binary_slice(table.column("mask"), 0, masks._HDR.size).to_pylist()
+        wrong = np.zeros(len(heads), dtype=bool)
+        for i, h in enumerate(heads):
+            if h is None or not is_mask[i] or codec_bad[i] or codec_null[i]:
+                continue
+            try:
+                inf = masks.info(h)
+            except Exception:
+                continue                                    # unreadable header: --deep reports it as mask_undecodable
+            wrong[i] = (inf["width"], inf["height"]) != tuple(size)
+        report("error", "mask_frame_size", f"mask was made for a different frame size than the video's {size[0]}x{size[1]}", wrong)
+
     conf = _np(table, "confidence", fill=0.5, dtype=np.float64)
     report("error", "bad_confidence", "confidence must be within 0..1", (conf < 0) | (conf > 1) | ~np.isfinite(conf))
     report("error", "bad_track_id", "track_id must be >= 0", _np(table, "track_id", fill=0) < 0)
@@ -227,9 +241,12 @@ def check_annotation_table(
                 outside = sel & geom & ~box_null & ((x0 < r.x - eps) | (y0 < r.y - eps) |
                                                     (x1 > r.x + r.width + eps) | (y1 > r.y + r.height + eps))
                 report("error", "box_outside_view", f"box extends outside view '{vid_}' region", outside)
-            if v.frame_range is not None:
-                report("error", "frame_outside_view", f"frame outside view '{vid_}' frame_range {list(v.frame_range)}",
-                       sel & ((start < v.frame_range[0]) | (end > v.frame_range[1])))
+            if v.ranges is not None:
+                inside = np.zeros(len(start), dtype=bool)
+                for a, b in v.ranges:
+                    inside |= (start >= a) & (end <= b)             # a row's frames must fit inside one range
+                report("error", "frame_outside_view", f"frame outside view '{vid_}' frame ranges {[list(r) for r in v.ranges]}",
+                       sel & ~inside)
             if v.allowed_labels is not None:
                 report("error", "label_not_allowed_in_view", f"label not allowed in view '{vid_}' (allowed: {v.allowed_labels})",
                        sel & ~np.isin(lcol, v.allowed_labels))

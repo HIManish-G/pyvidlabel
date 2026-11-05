@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-SPEC_VERSION = "0.5.0"
+SPEC_VERSION = "0.6.0"
 
 _ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _HASH_RE = re.compile(r"^[a-z0-9]+:[0-9a-f]+$")
@@ -167,6 +167,9 @@ class View(_Strict):
     output_size: tuple[int, int] | None = Field(
         default=None, description="(width, height) the region is resized to when shown to a pipeline. Omit if not resized.")
     frame_range: tuple[int, int] | None = Field(default=None, description="Inclusive [first, last] frame.")
+    frame_ranges: list[tuple[int, int]] | None = Field(
+        default=None, description="Several inclusive [first, last] frame ranges, in increasing order and not overlapping "
+                                  "(e.g. every December-February). Use this or frame_range, not both.")
     allowed_labels: list[str] | None = Field(default=None, description="If set, annotations in this view may only use these labels.")
     extra: dict[str, Any] = Field(default_factory=dict)
 
@@ -177,12 +180,36 @@ class View(_Strict):
         if self.frame_range is not None:
             if self.frame_range[0] < 0 or self.frame_range[0] > self.frame_range[1]:
                 raise ValueError("frame_range must be [first, last] with 0 <= first <= last")
+        if self.frame_ranges is not None:
+            if self.frame_range is not None:
+                raise ValueError("give frame_range or frame_ranges, not both")
+            if not self.frame_ranges:
+                raise ValueError("frame_ranges must not be empty (omit it to use every frame)")
+            prev_end = -1
+            for a, b in self.frame_ranges:
+                if a < 0 or a > b:
+                    raise ValueError("each frame_ranges entry must be [first, last] with 0 <= first <= last")
+                if a <= prev_end:
+                    raise ValueError("frame_ranges must be in increasing order and must not overlap")
+                prev_end = b
         if self.output_size is not None:
             if self.region is None:
                 raise ValueError("output_size needs a region")
             if self.output_size[0] <= 0 or self.output_size[1] <= 0:
                 raise ValueError("output_size must be positive")
         return self
+
+    @property
+    def ranges(self) -> list[tuple[int, int]] | None:
+        """The view's frame ranges as a list (from `frame_range` or `frame_ranges`), or None when every frame is in the view."""
+        if self.frame_ranges is not None:
+            return [tuple(r) for r in self.frame_ranges]
+        return [tuple(self.frame_range)] if self.frame_range is not None else None
+
+    def contains_frames(self, start: int, end: int) -> bool:
+        """Whether frames start..end (inclusive) all lie inside one of the view's ranges (always True without ranges)."""
+        r = self.ranges
+        return True if r is None else any(a <= start and end <= b for a, b in r)
 
     @property
     def scale(self) -> tuple[float, float]:

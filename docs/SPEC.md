@@ -1,4 +1,4 @@
-# vidlabel format, spec 0.5.0
+# vidlabel format, spec 0.6.0
 
 Authoritative definitions: `packages/vidlabel-spec` (pydantic models; `vidlabel schema` prints JSON Schema). This page is the
 normative summary; [concepts](concepts.md) explains the reasons and [design decisions](design-decisions.md) records the choices.
@@ -23,7 +23,7 @@ IDs match `[A-Za-z0-9._-]+`.
 ## Views (crops and time ranges)
 A view is a named region and/or frame range of one video, stored in `views/<view_id>.json`:
 `region` (x, y, width, height in displayed pixels), `output_size` (width, height the crop is resized to before a
-pipeline sees it; omit if not resized), `frame_range` ([first, last], inclusive), `allowed_labels` (optional list
+pipeline sees it; omit if not resized), `frame_range` ([first, last], inclusive) or `frame_ranges` (a list of such pairs, in increasing order and not overlapping; not both), `allowed_labels` (optional list
 from `vocab.json`). Several views of one video may coexist and overlap (e.g. a main area and a caption strip, each
 processed by its own model). No video file is created.
 
@@ -32,7 +32,7 @@ To convert from the crop a pipeline saw: `source = region.xy + view_pixels / sca
 `scale = output_size / region size` (1 if there is no `output_size`). The library does this for you:
 `View.to_source_box()`, `View.to_view_box()`, and `add_annotations(..., coords="view")` (also pastes crop masks into a
 full-frame canvas). The validator rejects rows whose box lies outside the view's region, whose frames lie outside its
-`frame_range`, whose label is not in its `allowed_labels`, or whose view belongs to a different video.
+`frame_range` or `frame_ranges` (a row's frames must fit inside one range), whose label is not in its `allowed_labels`, or whose view belongs to a different video.
 Rows with no `view_id` refer to the whole frame. Filter with `ds.annotations(view_id=...)` (`[None]` = whole-frame rows),
 `Compiled.clip(..., view_id=...)`, and `ds.build(view_ids=[...])` for a per-view release.
 
@@ -115,6 +115,7 @@ Returned by `Dataset.validate()` as `Issue(level, code, message)`; errors fail `
 | `unknown_view`, `view_wrong_video` | error | `view_id` not found, or the view belongs to another video |
 | `box_outside_view`, `frame_outside_view`, `label_not_allowed_in_view` | error | a row labelled in a view lies outside its region, frame range or allowed labels |
 | `bad_extra` | error | `extra` is not a JSON object |
+| `mask_frame_size` | error | a mask was encoded for a different frame size than the video (read from the mask header, no decoding) |
 | `mask_undecodable`, `mask_box_mismatch` | error | with `--deep`: a mask cannot be decoded or has the wrong frame size; its box differs from its pixel bounding box |
 
 ## Editing rules (0.1)
@@ -122,6 +123,9 @@ Each video has its own annotation file, so people working on different videos ne
 (temp file + rename) but not locked: one writer per video at a time. Ids are random 63-bit integers.
 
 ## Versions
+- **0.6.0.** Adds the optional `frame_ranges` to views (several time windows in one view; `frame_range` still works) and the
+  error `mask_frame_size` (a mask encoded for another frame size than the video, read from the mask header without decoding;
+  `--deep` still decodes everything). A 0.5 dataset opens unchanged. A 0.5 *library* cannot read a view that uses `frame_ranges`.
 - **0.5.0.** Adds the optional frame index above. Specifies `track_id` as scoped to one video and view, and adds the track
   rules: warning `track_label_conflict`, and error `duplicate_track_in_frame` (two boxes, or two masks, of one track in one
   frame). A dataset written by 0.4 opens unchanged (only the major version must match) but is validated against the new

@@ -99,6 +99,61 @@ vidlabel index path video_ids... [options]
 | `--force` / `--no-force` | off | Rebuild indexes that already exist. |
 | `--no-verify` | off | Do not check the file's hash against the registered one (faster). |
 
+## `derive-view`
+
+Copy the whole-frame rows that lie inside a view (frames, region, labels) into that view. Safe to run again.
+
+```
+vidlabel derive-view path video_id view_id [options]
+```
+
+| argument | |
+|---|---|
+| `path` | required |
+| `video_id` | required |
+| `view_id` | required |
+
+| option | default | what it does |
+|---|---|---|
+| `--label` | none | Only these labels (repeat for several). |
+| `--origin` | none | Only rows with these origins (repeat for several). |
+
+## `tracks`
+
+List the tracks of a video: label, frames, how many rows, mean confidence and review status of each.
+
+```
+vidlabel tracks path video_id [options]
+```
+
+| argument | |
+|---|---|
+| `path` | required |
+| `video_id` | required |
+
+| option | default | what it does |
+|---|---|---|
+| `--view` | none | Tracks made in this view (default: whole-frame rows). |
+
+## `review`
+
+Approve or reject whole tracks at once.
+
+```
+vidlabel review path video_id [options]
+```
+
+| argument | |
+|---|---|
+| `path` | required |
+| `video_id` | required |
+
+| option | default | what it does |
+|---|---|---|
+| `--track` | none | Track id to change (repeat for several). |
+| `--status` | none | unreviewed, approved or rejected. |
+| `--view` | none | The track was made in this view (default: whole-frame rows). |
+
 ## `add-labels`
 
 Add labels to the shared vocabulary.
@@ -114,7 +169,7 @@ vidlabel add-labels path labels...
 
 ## `add-view`
 
-Define a crop / time range of a video.
+Define a crop and/or time ranges of a video.
 
 ```
 vidlabel add-view path view_id video_id [options]
@@ -129,7 +184,7 @@ vidlabel add-view path view_id video_id [options]
 | option | default | what it does |
 |---|---|---|
 | `--region` | none | x,y,width,height in displayed pixels |
-| `--frames` | none | first,last frame (inclusive) |
+| `--frames` | none | first,last frame (inclusive); repeat for several time windows |
 | `--output-size` | none | width,height the crop is resized to, if resized |
 | `--labels` | none | comma-separated labels allowed in this view |
 

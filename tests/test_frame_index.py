@@ -79,4 +79,4 @@ def test_validation_catches_bad_stale_and_wrong_length_indexes(tmp_path):
 
 def test_schema_includes_the_frame_index():
     from vidlabel_spec import SPEC_VERSION, json_schema
-    assert "frame_index" in json_schema() and SPEC_VERSION == "0.5.0"
+    assert "frame_index" in json_schema() and SPEC_VERSION == "0.6.0"

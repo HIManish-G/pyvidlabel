@@ -178,11 +178,11 @@ class FrameSamples:
 
     def _frames_for(self, vid: str, mode: str) -> list[int]:
         n = self.ds.video(vid).frame_count
-        lo, hi = 0, n - 1
-        if self.view is not None and self.view.frame_range is not None:
-            lo, hi = max(lo, self.view.frame_range[0]), min(hi, self.view.frame_range[1])
+        ranges = [(0, n - 1)]
+        if self.view is not None and self.view.ranges is not None:      # only the frames inside the view's time windows
+            ranges = [(max(0, a), min(n - 1, b)) for a, b in self.view.ranges if max(0, a) <= min(n - 1, b)]
         if mode == "all":
-            return list(range(lo, hi + 1))
+            return [f for a, b in ranges for f in range(a, b + 1)]
         code = self._vcode_of.get(vid)
         if code is None:
             return []
@@ -190,10 +190,14 @@ class FrameSamples:
         a0, a1 = np.searchsorted(self._pkey, [code * _KEY, (code + 1) * _KEY])
         rows = self._prow[a0:a1]
         out: set[int] = set(self._start[rows[np.isin(self._kind[rows], wanted)]].tolist())
-        for a, b, i in self._spans.get(code, []):
+        for sa, sb, i in self._spans.get(code, []):
             if self._kind[i] in wanted:
-                out.update(range(max(a, lo), min(b, hi) + 1))
-        return sorted(f for f in out if lo <= f <= hi)
+                for ra, rb in ranges:
+                    out.update(range(max(sa, ra), min(sb, rb) + 1))
+        if len(ranges) == 1:
+            lo, hi = ranges[0]
+            return sorted(f for f in out if lo <= f <= hi)
+        return sorted(f for f in out if any(a <= f <= b for a, b in ranges))
 
     # ---- access ----
     def __len__(self) -> int:

@@ -174,6 +174,40 @@ def _ints(text: str, n: int, what: str) -> list[int]:
     return vals
 
 
+@_command("derive-view")
+def derive_view(path: Path, video_id: str, view_id: str,
+                label: list[str] = typer.Option([], help="Only these labels (repeat for several)."),
+                origin: list[str] = typer.Option([], help="Only rows with these origins (repeat for several).")):
+    """Copy the whole-frame rows that lie inside a view (frames, region, labels) into that view. Safe to run again."""
+    r = Dataset.open(path).derive_view_rows(video_id, view_id, labels=label or None, origins=origin or None)
+    typer.echo(f"copied {r['copied']} row(s) into view {view_id}; already there {r['already_derived']}; not copied: "
+               f"{r['skipped_partial']} partly outside the region, {r['skipped_outside']} outside it, "
+               f"{r['skipped_label']} label not allowed, {r['skipped_frames']} outside the frames")
+
+
+@_command()
+def tracks(path: Path, video_id: str, view: Optional[str] = typer.Option(None, help="Tracks made in this view (default: whole-frame rows).")):
+    """List the tracks of a video: label, frames, how many rows, mean confidence and review status of each."""
+    rows = Dataset.open(path).tracks(video_id, view_id=view)
+    if not rows:
+        typer.echo("no tracks" + (f" in view '{view}'" if view else ""))
+    for r in rows:
+        conf = f"{r['mean_confidence']:.2f}" if r["mean_confidence"] is not None else "-"
+        st = ", ".join(f"{k}={v}" for k, v in sorted(r["statuses"].items()))
+        typer.echo(f"track {r['track_id']:>5}  {','.join(r['labels']):<16} frames {r['first_frame']}-{r['last_frame']:<7} "
+                   f"{r['n_rows']:>5} rows  conf {conf:>4}  {st}")
+
+
+@_command()
+def review(path: Path, video_id: str, track: list[int] = typer.Option(..., help="Track id to change (repeat for several)."),
+           status: str = typer.Option(..., help="unreviewed, approved or rejected."),
+           view: Optional[str] = typer.Option(None, help="The track was made in this view (default: whole-frame rows).")):
+    """Approve or reject whole tracks at once."""
+    ds = Dataset.open(path)
+    n = sum(ds.update_track(video_id, t, view_id=view, status=status) for t in track)
+    typer.echo(f"set {n} row(s) of {len(track)} track(s) to {status}")
+
+
 @_command("add-labels")
 def add_labels(path: Path, labels: list[str]):
     """Add labels to the shared vocabulary."""
@@ -187,16 +221,18 @@ def add_labels(path: Path, labels: list[str]):
 @_command("add-view")
 def add_view(path: Path, view_id: str, video_id: str,
              region: Optional[str] = typer.Option(None, help="x,y,width,height in displayed pixels"),
-             frames: Optional[str] = typer.Option(None, help="first,last frame (inclusive)"),
+             frames: list[str] = typer.Option([], help="first,last frame (inclusive); repeat for several time windows"),
              output_size: Optional[str] = typer.Option(None, help="width,height the crop is resized to, if resized"),
              labels: Optional[str] = typer.Option(None, help="comma-separated labels allowed in this view")):
-    """Define a crop / time range of a video."""
+    """Define a crop and/or time ranges of a video."""
     spec: dict = {"view_id": view_id, "video_id": video_id}
     if region:
         x, y, w, h = _ints(region, 4, "--region")
         spec["region"] = {"x": x, "y": y, "width": w, "height": h}
-    if frames:
-        spec["frame_range"] = tuple(_ints(frames, 2, "--frames"))
+    if len(frames) == 1:
+        spec["frame_range"] = tuple(_ints(frames[0], 2, "--frames"))
+    elif frames:
+        spec["frame_ranges"] = [tuple(_ints(f, 2, "--frames")) for f in frames]
     if output_size:
         spec["output_size"] = tuple(_ints(output_size, 2, "--output-size"))
     if labels:

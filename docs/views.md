@@ -16,7 +16,8 @@ A **view** is a named region and/or frame range of one video, stored in `views/<
 | `view_id`, `video_id` | the view's name and the video it belongs to |
 | `region` | `x, y, width, height` in displayed pixels: the crop; omit for the whole frame |
 | `output_size` | `(width, height)` the crop is resized to before the pipeline sees it; omit if it is not resized. Needs a `region` |
-| `frame_range` | `[first, last]` inclusive: only these frames are processed in this view (one range per view: December to February of a year that wraps needs two views) |
+| `frame_range` | `[first, last]` inclusive: only these frames are processed in this view |
+| `frame_ranges` | several such pairs, increasing and not overlapping, for a view made of more than one time window (every December to February, say). Use this or `frame_range`, not both |
 | `allowed_labels` | if set, annotations in this view may only use these labels (all must be in the vocabulary) |
 
 Views of one video may overlap and coexist.
@@ -104,3 +105,16 @@ the full-frame samples from a release made without those views, or filter with `
 - **Checking:** `vidlabel preview my_dataset clip --view lower_strip` draws that view's crop with its annotations.
 - **Tracks** are numbered per view: two pipelines can each use `track_id` 1 without clashing
   ([concepts](concepts.md#tracks)).
+
+## Copying whole-frame labels into a view
+If you labelled the whole frame and now want a crop view to sample those labels, `ds.derive_view_rows(video_id, view_id)`
+(CLI: `vidlabel derive-view PATH VIDEO VIEW`) copies the rows that belong in the view: frames inside its time windows, box or mask
+entirely inside its region, label allowed. Copies keep track ids, confidence and origin, get new ids, and record
+`extra.derived_from`; running it again copies only what is new. Rows that only partly overlap the region are counted in
+`skipped_partial` and not copied, because cutting a box or mask would change it. The originals stay, so whole-frame samples see
+both; build whole-frame releases with `build(view_ids=[None])` to leave the copies out.
+
+## Reviewing a whole track
+`vidlabel tracks PATH VIDEO` lists the tracks (labels, rows, frames, mean confidence, statuses); `vidlabel review PATH VIDEO --track 7
+--status rejected` changes one track at once. In Python: `ds.tracks()`, `ds.update_track()`, `ds.delete_track()` and the `track_id`
+filter of `ds.annotations()`.
