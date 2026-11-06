@@ -86,6 +86,9 @@ def test_viewer_shows_frame_boxes_and_mask_and_steps(page):
     pg.reload()
     pg.wait_for_selector(".annrow")
     assert pg.locator(".annrow").count() == 4                    # three tracks and one mask on frame 10
+    _settled(pg, 10)
+    pg.wait_for_function("V.masks.size > 0 && [...V.masks.values()].every(e => e.ready)")      # the mask image has arrived
+    pg.evaluate("new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))")      # and been painted
     pixels = pg.evaluate("""() => { const c = document.querySelector('.stage canvas'); const x = c.getContext('2d');
         const d = x.getImageData(70, 40, 1, 1).data; return [c.width, c.height, d[0], d[1], d[2]]; }""")
     assert pixels[:2] == [96, 64] and pixels[2:] != [60, 60, 60]  # the mask tint changed the pixel at (70, 40)
@@ -113,7 +116,11 @@ def test_review_commit_history_revert_and_conflict(page):
     pg.wait_for_selector(".toast:has-text('Committed')")
     assert ds.annotations("clip", status="rejected").num_rows == 35
     pg.goto(f"{base}/#/history")
-    pg.wait_for_selector("tbody tr:has-text('reject first track')")
+    try:
+        pg.wait_for_selector("tbody tr:has-text('reject first track')", timeout=15000)
+    except Exception as e:                                    # say what the page and the server held, so a failure on another machine can be read
+        hist = pg.evaluate("fetch('/api/history').then(r => r.text())")
+        raise AssertionError(f"history row missing. page text: {pg.inner_text('#main')[:400]!r}; /api/history: {hist[:600]}; errors: {pg.errors}") from e
     pg.click("tbody tr:first-child button:has-text('Revert')")
     pg.click(".modal button.primary")
     pg.wait_for_selector(".toast:has-text('Reverted')")
@@ -520,3 +527,16 @@ def test_the_box_tool_refuses_a_second_box_for_a_track_on_the_same_frame(page):
     pg.mouse.up()
     pg.wait_for_selector(".toast.bad:has-text('already has a box')")
     assert _draft_count(pg) == 0
+
+
+def test_a_slow_page_never_overwrites_the_page_you_moved_to(page):
+    pg, ds, base = page
+    pg.evaluate("""() => { const f = window.fetch; window.fetch = (u, o) => (String(u).includes('/api/videos/clip')
+        ? new Promise(r => setTimeout(r, 1500)).then(() => f(u, o)) : f(u, o)); }""")                 # the Review page's data arrives late
+    pg.evaluate("location.hash = '#/review/clip'")
+    pg.wait_for_timeout(300)
+    pg.evaluate("location.hash = '#/history'")                # move on before the Review page has finished
+    pg.wait_for_selector("h1:has-text('History')")
+    pg.wait_for_timeout(2500)                                 # let the slow page finish
+    assert pg.locator("h1").first.inner_text().strip().lower().startswith("history")
+    assert not pg.errors

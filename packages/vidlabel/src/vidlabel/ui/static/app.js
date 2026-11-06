@@ -231,10 +231,12 @@ let renderToken = 0;
 async function render() {
   if (!S.session) return;
   const { parts, q } = parseHash();
-  const main = $("#main");
+  const root = $("#main");
   const mine = ++renderToken;
+  /* a page only touches the screen through this: once the person has moved to another page, a slow page that finishes late changes nothing */
+  const main = { set className(v) { if (mine === renderToken) root.className = v; }, replaceChildren(...k) { if (mine === renderToken) root.replaceChildren(...k); } };
   stopViewer();
-  main.className = "";
+  root.className = "";
   $("#nav").replaceChildren(...NAV.map(([k, t]) => h("a", { href: "#/" + k, class: (parts[0] === k || (k === "browse" && parts[0] === "video")) ? "on" : "" }, t)));
   if (!S.session.has_dataset) return pageSetup(main);
   try {
