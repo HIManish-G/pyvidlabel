@@ -229,7 +229,7 @@ function spanStart(e) {
     removeEventListener("pointermove", mv); removeEventListener("pointerup", up);
     const s = V.spanDrag; V.spanDrag = null; if (!s) return;
     const lo = Math.min(s.a, s.b), hi = Math.max(s.a, s.b);
-    if (await draftOp("/api/draft/add", { video_id: V.vid, row: { kind: "marker", label: V.label, start_frame: lo, end_frame: hi, ...vtag() } })) { toast(lo === hi ? `Labelled frame ${lo}` : `Labelled frames ${lo} to ${hi}`); await afterEdit(); }
+    if (await draftOp("/api/draft/add", { video_id: V.vid, row: { kind: "marker", label: V.label, start_frame: lo, end_frame: hi, ...vtag() } })) { await afterEdit(); toast(lo === hi ? `Labelled frame ${lo}` : `Labelled frames ${lo} to ${hi}`); }
   };
   addEventListener("pointermove", mv); addEventListener("pointerup", up);
 }
@@ -333,7 +333,7 @@ function spanByNumbers() {
       if (!needLabel()) return;
       const [lo, hi] = readNumbers(els);
       if (!Number.isInteger(lo) || !Number.isInteger(hi) || lo < 0 || hi < lo || hi > V.frames - 1) { toast(`Give a first and last frame between 0 and ${V.frames - 1}, the first not after the last.`, true); return; }
-      if (await draftOp("/api/draft/add", { video_id: V.vid, row: { kind: "marker", label: V.label, start_frame: lo, end_frame: hi, ...vtag() } })) { toast(lo === hi ? `Labelled frame ${lo}` : `Labelled frames ${lo} to ${hi}`); await afterEdit(); }
+      if (await draftOp("/api/draft/add", { video_id: V.vid, row: { kind: "marker", label: V.label, start_frame: lo, end_frame: hi, ...vtag() } })) { await afterEdit(); toast(lo === hi ? `Labelled frame ${lo}` : `Labelled frames ${lo} to ${hi}`); }
     } }, "Add span"));
 }
 
