@@ -39,7 +39,7 @@ def _friendly(fn):
         except (OSError, ValueError, KeyError, RuntimeError, PydanticValidationError, subprocess.SubprocessError) as e:
             if os.environ.get("VIDLABEL_DEBUG"):
                 raise
-            if kwargs.get("json_out"):                              # a program is reading: errors are JSON too
+            if kwargs.get("json_out") or fn.__name__ == "query":      # a program is reading: errors are JSON too
                 _emit({"ok": False, "error": _message(e)})
             else:
                 typer.echo(f"[error] {_message(e)}")
@@ -440,6 +440,10 @@ def query(path: Path, video_id: str,
     """Print the annotations of one video as JSON (ids are strings; mask pixels are left out). For scripts and agents."""
     ds = Dataset.open(path)
     ds.video(video_id)
+    if label is not None and label not in {l.name for l in ds.vocab.labels}:
+        raise ValueError(f"no label '{label}'. Labels: {[l.name for l in ds.vocab.labels]}")
+    if view is not None and view not in ds.view_ids():
+        raise ValueError(f"no view '{view}'. Views: {ds.view_ids()}")
     kw: dict = {"view_id": [view]}
     for k, v in (("kind", kind), ("label", label), ("status", status), ("origin", origin), ("track_id", track)):
         if v is not None:
@@ -452,7 +456,7 @@ def query(path: Path, video_id: str,
             raise ValueError(f"--frames must look like 100-200, not '{frames}'") from None
     rows = ds.annotations(video_id, **kw).to_pylist()
     part = rows[max(0, offset):max(0, offset) + max(1, limit)]
-    out = [{k: (str(v) if k == "annotation_id" else v) for k, v in r.items() if k != "mask" and v is not None} | {"has_mask": r.get("mask") is not None}
+    out = [{k: (str(v) if k == "annotation_id" else v) for k, v in r.items() if k not in ("mask", "mask_codec", "mask_b64") and v is not None} | {"has_mask": r.get("mask") is not None}
            for r in part]
     _emit({"video_id": video_id, "total": len(rows), "offset": max(0, offset), "returned": len(out), "rows": out})
 

@@ -565,3 +565,45 @@ def test_proposals_page_takes_agent_rows_into_my_draft(page):
     assert pg.evaluate("V.rows.some(r => r.pending === 'added' && r.origin === 'model' && r.author === 'agent:scout')")
     pg.evaluate("fetch('/api/draft/discard', {method: 'POST', headers: {'X-Requested-With': 'vidlabel', 'X-Vidlabel-Author': 'ana', 'Content-Type': 'application/json'}, body: '{}'})")
     assert not pg.errors
+
+
+def test_proposals_page_empty_state_hostile_text_per_video_and_conflicts(page):
+    pg, ds, base = page
+    from vidlabel.agent import AgentSession
+    from vidlabel.ui import draft as Dr
+    pg.goto(f"{base}/#/proposals")
+    pg.reload()
+    pg.wait_for_selector(".card.empty:has-text('Nothing is waiting')")
+    assert not pg.locator("#nav a:has-text('Proposals') .badge").count()
+
+    hostile = "<img src=x onerror=\"window.__pwned=1\"><script>window.__pwned=1</script>"
+    ag = AgentSession(ds.path, "scout")
+    ag.propose_boxes("clip", [{"frame": 56, "label": "person", "box": [2, 2, 20, 20], "track_id": 9}, {"frame": 57, "label": "person", "box": [2, 2, 20, 20], "track_id": 9}], note=hostile)
+    ag.propose_spans("clip", [{"start_frame": 1, "end_frame": 4, "label": "car"}], note="span note")
+    pg.goto(f"{base}/#/proposals")
+    pg.reload()
+    pg.wait_for_selector("h2:has-text('agent:scout')")
+    assert pg.evaluate("window.__pwned") is None and pg.locator("table img, table script").count() == 0       # a note is text, never markup
+    assert "<img" in pg.inner_text("table")
+    assert pg.locator("tbody tr").count() == 3
+
+    # someone else puts a box on track 9 in frame 56 into my draft: the take-in must be refused as a whole and say why
+    Dr.Draft.load(ds, "ana").add("clip", {"kind": "box", "label": "person", "start_frame": 56, "box": (1, 1, 9, 9), "track_id": 9})
+    pg.reload()
+    pg.wait_for_selector("h2:has-text('agent:scout')")
+    n = _draft_count(pg)
+    pg.click("button:has-text('Take all into my draft')")
+    pg.click(".modal button:has-text('OK')")
+    pg.wait_for_selector(".toast:has-text('Nothing was taken in')")
+    assert _draft_count(pg) == n and pg.locator("tbody tr").count() == 3                       # my draft and the list are as they were
+
+    # remove the conflict, then take in only what is wanted; discard the rest
+    Dr.Draft.load(ds, "ana").discard(0)
+    pg.reload()
+    pg.wait_for_selector("h2:has-text('agent:scout')")
+    pg.click("button.small:has-text('Throw away')")
+    pg.click(".modal button:has-text('OK')")
+    pg.wait_for_selector(".toast:has-text('Discarded')")
+    pg.wait_for_selector(".card.empty")
+    assert Dr.proposals(ds, "ana") == [] and Dr.Draft.load(ds, "ana").summary()["added"] == 0
+    assert [e for e in pg.errors if "status of 400" not in e] == [] and len(pg.errors) == 1       # only the refusal above, which is meant

@@ -210,3 +210,231 @@ def test_adopt_one_video_only_and_discard(ds, ag):
     assert D.discard_proposals(ds, "ana", "agent:scout")["discarded"] == 4
     assert D.proposals(ds, "ana") == []
     assert D.Draft.load(ds, "ana").summary()["added"] == 1                        # what was already taken is kept
+
+
+# ---------------------------------------------------------------- strictness: nothing odd gets into a draft
+NAN, INF = float("nan"), float("inf")
+
+
+@pytest.mark.parametrize("item, why", [
+    ({"frame": 1, "label": "thing", "box": [True, 0, 5, 5]}, "box value"),
+    ({"frame": 1, "label": "thing", "box": [NAN, 1, 9, 9]}, "box value"),
+    ({"frame": 1, "label": "thing", "box": [1, 1, INF, 9]}, "box value"),
+    ({"frame": 1, "label": "thing", "box": [9, 9, 1, 1]}, "x1 > x0"),
+    ({"frame": 1, "label": "thing", "box": [5, 5, 5, 5]}, "x1 > x0"),
+    ({"frame": 1, "label": "thing", "box": [1, 1, 9]}, "must be"),
+    ({"frame": 1, "label": "thing", "box": "1,1,9,9"}, "must be"),
+    ({"frame": 1.5, "label": "thing", "box": [1, 1, 9, 9]}, "whole number"),
+    ({"frame": "3", "label": "thing", "box": [1, 1, 9, 9]}, "whole number"),
+    ({"frame": True, "label": "thing", "box": [1, 1, 9, 9]}, "whole number"),
+    ({"frame": -1, "label": "thing", "box": [1, 1, 9, 9]}, "out of range"),
+    ({"frame": 100, "label": "thing", "box": [1, 1, 9, 9]}, "does not exist"),
+    ({"frame": 10 ** 30, "label": "thing", "box": [1, 1, 9, 9]}, "out of range"),
+    ({"frame": 1, "label": "nope", "box": [1, 1, 9, 9]}, "vocab"),
+    ({"frame": 1, "label": 5, "box": [1, 1, 9, 9]}, "label must be a text"),
+    ({"frame": 1, "label": ["thing"], "box": [1, 1, 9, 9]}, "label must be a text"),
+    ({"frame": 1, "label": "thing", "box": [1, 1, 9, 9], "confidence": 1.5}, "between 0 and 1"),
+    ({"frame": 1, "label": "thing", "box": [1, 1, 9, 9], "confidence": -0.1}, "between 0 and 1"),
+    ({"frame": 1, "label": "thing", "box": [1, 1, 9, 9], "confidence": NAN}, "finite"),
+    ({"frame": 1, "label": "thing", "box": [1, 1, 9, 9], "confidence": True}, "finite"),
+    ({"frame": 1, "label": "thing", "box": [1, 1, 9, 9], "confidence": "0.5"}, "finite"),
+    ({"frame": 1, "label": "thing", "box": [1, 1, 9, 9], "track_id": -1}, "out of range"),
+    ({"frame": 1, "label": "thing", "box": [1, 1, 9, 9], "track_id": 1.5}, "whole number"),
+    ({"frame": 1, "label": "thing", "box": [1, 1, 9, 9], "track_id": "a"}, "whole number"),
+    ({"frame": 1, "label": "thing", "box": [1, 1, 9, 9], "track_id": True}, "whole number"),
+    ({"frame": 1, "label": "thing", "box": [1, 1, 9, 9], "track_id": 10 ** 30}, "out of range"),
+])
+def test_odd_values_are_refused_with_a_message_and_nothing_is_recorded(ds, ag, item, why):
+    before = _hash(ds)
+    with pytest.raises(AgentError, match=why):
+        ag.propose_boxes("v", [item])
+    assert ag.draft_status()["summary"]["added"] == 0 and _hash(ds) == before
+
+
+def test_whole_numbers_given_as_floats_are_fine_and_come_out_as_integers(ds, ag):
+    ag.propose_boxes("v", [{"frame": 3.0, "label": "thing", "box": [1, 1.5, 9, 9.25], "track_id": 4.0, "confidence": 1}])
+    r = next(x for x in D.Draft.load(ds, "agent:scout").rows("v", include_deleted=False, frames=(3, 3)) if x.get("_pending"))
+    assert r["start_frame"] == 3 and r["track_id"] == 4 and r["confidence"] == 1.0 and (r["x0"], r["y0"], r["x1"], r["y1"]) == (1, 1.5, 9, 9.25)
+
+
+@pytest.mark.parametrize("item, why", [
+    ({"start_frame": 9, "end_frame": 3, "label": "thing"}, "end_frame < start_frame"),
+    ({"start_frame": 9, "end_frame": 300, "label": "thing"}, "does not exist"),
+    ({"start_frame": "a", "end_frame": 3, "label": "thing"}, "whole number"),
+    ({"start_frame": 1, "end_frame": 3, "label": "thing", "confidence": 7}, "between 0 and 1"),
+    ({"start_frame": 1, "end_frame": 3, "label": "thing", "box": [1, 1, 2, 2]}, "not allowed"),
+    ({"start_frame": 1, "end_frame": 3, "label": "thing", "track_id": 2}, "not allowed"),
+    ({"start_frame": 1, "end_frame": 3}, "missing"),
+])
+def test_odd_spans_are_refused(ds, ag, item, why):
+    with pytest.raises(AgentError, match=why):
+        ag.propose_spans("v", [item])
+    assert ag.draft_status()["summary"]["added"] == 0
+
+
+@pytest.mark.parametrize("poly, why", [
+    ("abc", "list of"), ([[0, 0], [5], [5, 0]], "list of"), ([[0, 0], [5, 5]], "at least 3"), ([[0, 0], [NAN, 5], [5, 0]], "at least 3"),
+    ([[0, 0], [5, 5], [10, 10]], "no area"), ([[0, 0], [10, 10], [10, 0], [0, 10]], "no area"),
+    ([[-1, 0], [5, 5], [5, 0]], "inside the frame"), ([[0, 0], [65, 5], [5, 0]], "inside the frame"), ([[0, 0], [5, 49], [5, 0]], "inside the frame"),
+    ([[1, 1], [1.2, 1], [1, 1.2]], "no area"),
+])
+def test_odd_polygons_are_refused(ag, poly, why):
+    with pytest.raises(AgentError, match=why):
+        ag.propose_masks("v", [{"frame": 5, "label": "thing", "polygon": poly}])
+    assert ag.draft_status()["summary"]["added"] == 0
+
+
+def test_a_polygon_becomes_the_mask_it_describes(ds, ag):
+    from vidlabel import masks
+    ag.propose_masks("v", [{"frame": 60, "label": "thing", "polygon": [[10, 10], [30, 10], [30, 30], [10, 30]], "track_id": 8},
+                           {"frame": 61, "label": "thing", "polygon": [[0, 0], [64, 0], [64, 48], [0, 48]]}])
+    D.adopt(ds, "ana", "agent:scout")
+    D.Draft.load(ds, "ana").commit("take in")
+    rows = {r["start_frame"]: r for r in Dataset.open(ds.path).annotations("v", kind="mask").to_pylist()}
+    small = masks.decode(rows[60]["mask"])
+    assert small.shape == (48, 64) and small[20, 20] and not small[5, 5] and not small[35, 35]
+    assert 19 * 19 <= small.sum() <= 21 * 21 and rows[60]["track_id"] == 8
+    assert (rows[60]["x0"], rows[60]["y0"]) == (10, 10) and (rows[60]["x1"], rows[60]["y1"]) in {(30, 30), (31, 31)}
+    assert masks.decode(rows[61]["mask"]).all()                                  # the whole frame, corners included
+
+
+def test_notes_must_be_text_and_are_shortened(ds, ag):
+    with pytest.raises(AgentError, match="note must be text"):
+        ag.propose_boxes("v", [{"frame": 1, "label": "thing", "box": [1, 1, 9, 9]}], note=5)
+    ag.propose_boxes("v", [{"frame": 2, "label": "thing", "box": [1, 1, 9, 9]}], note="x" * 10000)
+    assert len(ag.draft_status()["edits"][0]["note"]) == 300
+    ag.propose_boxes("v", [{"frame": 3, "label": "thing", "box": [1, 1, 9, 9]}], note="   ")
+    assert "note" not in ag.draft_status()["edits"][1]
+
+
+def test_the_size_of_a_call_is_limited(ds, ag):
+    ok = [{"frame": i % 100, "label": "thing", "box": [1, 1, 9, 9], "track_id": 1000 + i} for i in range(500)]
+    assert ag.propose_boxes("v", ok)["recorded"] == 500
+    with pytest.raises(AgentError, match="at most 500"):
+        ag.propose_boxes("v", [{"frame": 1, "label": "thing", "box": [1, 1, 9, 9]}] * 501)
+    with pytest.raises(AgentError, match="non-empty"):
+        ag.propose_boxes("v", [])
+    with pytest.raises(AgentError, match="every item"):
+        ag.propose_boxes("v", [1])
+    assert ag.draft_status()["summary"]["added"] == 500
+
+
+# ---------------------------------------------------------------- reading
+def test_listing_validates_filters_and_pages(ds, ag):
+    for kw, why in (({"kind": "zzz"}, "unknown kind"), ({"status": "zzz"}, "unknown status"), ({"label": "nope"}, "no label"),
+                    ({"view_id": "nov"}, "no view"), ({"track_id": "a"}, "whole number"), ({"limit": "a"}, "whole number")):
+        with pytest.raises(AgentError, match=why):
+            ag.list_annotations("v", **kw)
+    with pytest.raises(AgentError, match="no video"):
+        ag.list_annotations("nov")
+    with pytest.raises(AgentError, match="no view"):
+        ag.list_tracks("v", "nov")
+    a = ag.list_annotations("v", limit=4)
+    assert a["total"] == 10 and a["returned"] == 4 and a["offset"] == 0
+    b = ag.list_annotations("v", limit=4, offset=8)
+    assert b["returned"] == 2 and {r["annotation_id"] for r in a["rows"]}.isdisjoint({r["annotation_id"] for r in b["rows"]})
+    assert ag.list_annotations("v", limit=-5)["returned"] == 1 and ag.list_annotations("v", offset=-3)["offset"] == 0
+    assert ag.list_annotations("v", offset=10 ** 9)["rows"] == []
+    assert ag.list_annotations("v", frame_start=50, frame_end=10)["total"] == 0
+    assert ag.list_annotations("v", frame_start=3, frame_end=5)["total"] == 3
+    assert ag.list_annotations("v", frame_start=8)["total"] == 2 and ag.list_annotations("v", frame_end=1)["total"] == 2
+    assert all(isinstance(r["annotation_id"], str) and r["has_mask"] is False for r in a["rows"])
+    assert ag.list_annotations("v", limit=10 ** 6)["returned"] == 10
+
+
+def test_listing_marks_pending_rows_and_hides_other_authors_drafts(ds, ag):
+    ag.propose_boxes("v", [{"frame": 20, "label": "thing", "box": [1, 1, 9, 9]}])
+    D.Draft.load(ds, "bob").add("v", {"kind": "box", "label": "thing", "start_frame": 21, "box": (1, 1, 9, 9)})
+    rows = ag.list_annotations("v", frame_start=20, frame_end=21)["rows"]
+    assert [(r["start_frame"], r["pending"]) for r in rows] == [(20, "added")]
+    other = AgentSession(ds.path, "other")
+    assert other.list_annotations("v", frame_start=20, frame_end=21)["total"] == 0
+
+
+def test_the_tracks_listing_does_not_include_unadopted_proposals_but_listing_does(ds, ag):
+    ag.propose_boxes("v", [{"frame": 20, "label": "thing", "box": [1, 1, 9, 9], "track_id": 9}])
+    assert {t["track_id"] for t in ag.list_tracks("v")["tracks"]} == {1}
+    assert ag.list_annotations("v", track_id=9)["total"] == 1
+
+
+# ---------------------------------------------------------------- who is who
+def test_agent_names_never_share_a_draft_or_escape_the_folder(ds):
+    from vidlabel.agent import agent_author
+    names = [None, "", "agent", "scout", "Scout", "..", ".", "../../x", "a:b", "ab", "a/b", "ab ", "名前", "日本", "x" * 80, "y" * 80 + "z"]
+    authors = {n: agent_author(n) for n in names}
+    assert authors[None] == authors[""] == authors["agent"] == "agent:agent" and authors["ab "] == authors["ab"]
+    distinct = {a.lower() for n, a in authors.items() if n not in (None, "", "ab ")}
+    assert len(distinct) == len([n for n in names if n not in (None, "", "ab ")])
+    assert len({a.lower() for a in (authors["scout"], authors["Scout"], authors[".."], authors["."], authors["名前"], authors["日本"], authors["a:b"], authors["ab"])}) == 8
+    for n in names:
+        s = AgentSession(ds.path, n)
+        s.propose_spans("v", [{"start_frame": 1, "end_frame": 2, "label": "thing"}])
+    drafts = ds.path / ".vidlabel-ui" / "drafts"
+    files = [p for p in drafts.iterdir()]
+    assert all(p.parent == drafts and p.suffix == ".json" and "/" not in p.name for p in files)
+    assert len({p.name.lower() for p in files}) == len(files)                      # no two share a file, even on a case-insensitive disk
+
+
+def test_a_session_picks_up_its_own_pending_work_after_a_restart(ds):
+    AgentSession(ds.path, "scout").propose_spans("v", [{"start_frame": 5, "end_frame": 9, "label": "thing"}])
+    again = AgentSession(ds.path, "scout")
+    assert again.draft_status()["summary"]["added"] == 1 and again.overview()["your_pending_changes"]["added"] == 1
+    assert again.retract(["p1"])["retracted"] == 1 and AgentSession(ds.path, "scout").draft_status()["summary"]["added"] == 0
+
+
+def test_retract_is_all_or_nothing(ds, ag):
+    ag.propose_boxes("v", [{"frame": 70, "label": "thing", "box": [1, 1, 9, 9]}, {"frame": 71, "label": "thing", "box": [1, 1, 9, 9]}])
+    with pytest.raises(AgentError, match="not pending"):
+        ag.retract(["p1", "p99"])
+    assert ag.draft_status()["summary"]["added"] == 2
+    with pytest.raises(AgentError):
+        ag.retract("p1")                                                         # a bare string is not a list of ids
+    assert ag.retract(["p1", "p1"])["retracted"] == 1 and ag.draft_status()["summary"]["added"] == 1
+
+
+# ---------------------------------------------------------------- two agents, a person, a changing dataset
+def test_two_agents_propose_independently_and_the_second_take_in_is_refused_cleanly(ds):
+    a, b = AgentSession(ds.path, "a"), AgentSession(ds.path, "b")
+    a.propose_boxes("v", [{"frame": 80, "label": "thing", "box": [1, 1, 9, 9], "track_id": 5}])
+    b.propose_boxes("v", [{"frame": 80, "label": "other", "box": [2, 2, 9, 9], "track_id": 5}])       # same track and frame
+    assert {p["author"] for p in D.proposals(ds, "ana")} == {"agent:a", "agent:b"}
+    assert D.adopt(ds, "ana", "agent:a")["taken"] == 1
+    with pytest.raises(D.DraftError, match="already has a box on frame 80.*Nothing was taken in"):
+        D.adopt(ds, "ana", "agent:b")
+    assert D.proposals(ds, "ana")[0]["author"] == "agent:b" and D.proposals(ds, "ana")[0]["adds"] == 1
+
+
+def test_proposals_survive_the_dataset_changing_and_are_rechecked_when_taken_in(ds, ag):
+    ag.propose_boxes("v", [{"frame": 90, "label": "thing", "box": [1, 1, 9, 9], "track_id": 6}, {"frame": 91, "label": "thing", "box": [1, 1, 9, 9]}])
+    ds.add_annotations([{"kind": "box", "label": "thing", "start_frame": 90, "box": (3, 3, 9, 9), "track_id": 6, "origin": "human"}], "v")   # someone commits the same track and frame
+    assert ag.list_annotations("v", frame_start=90, frame_end=90)["total"] == 2                          # reading still works
+    with pytest.raises(D.DraftError, match="Nothing was taken in"):
+        D.adopt(ds, "ana", "agent:scout")
+    assert D.Draft.load(ds, "ana").summary()["added"] == 0 and D.proposals(ds, "ana")[0]["adds"] == 2
+    ag.retract(["p1"])
+    assert D.adopt(ds, "ana", "agent:scout")["taken"] == 1
+
+
+def test_a_label_added_later_can_be_used_and_a_removed_video_is_refused(ds, ag):
+    with pytest.raises(AgentError, match="vocab"):
+        ag.propose_spans("v", [{"start_frame": 1, "end_frame": 2, "label": "late"}])
+    ds.add_labels(["late"])
+    assert AgentSession(ds.path, "scout").propose_spans("v", [{"start_frame": 1, "end_frame": 2, "label": "late"}])["recorded"] == 1
+
+
+def test_the_whole_road_from_proposal_to_a_valid_dataset(ds, ag):
+    before = ds.stats()
+    ag.propose_boxes("v", [{"frame": f, "label": "thing", "box": [2 + f % 5, 3, 30, 40], "track_id": 11, "confidence": 0.5 + f / 100} for f in range(30, 40)])
+    ag.propose_spans("v", [{"start_frame": 30, "end_frame": 39, "label": "other", "confidence": 0.9}])
+    ag.propose_masks("v", [{"frame": 35, "label": "thing", "polygon": [[10, 10], [40, 12], [30, 40]], "track_id": 12}])
+    D.adopt(ds, "ana", "agent:scout")
+    me = D.Draft.load(ds, "ana")
+    me.commit("agent pass")
+    after = Dataset.open(ds.path)
+    new = [r for r in after.annotations("v").to_pylist() if r["author"] == "agent:scout"]
+    assert len(new) == 12 and {(r["origin"], r["status"]) for r in new} == {("model", "unreviewed")}
+    assert not [i for i in after.validate(deep=True) if i.level == "error"]
+    assert D.proposals(after, "ana") == [] and AgentSession(ds.path, "scout").draft_status()["summary"]["added"] == 0
+    assert after.stats() != before
+    release, _ = after.build()
+    assert release.n_rows == len(after.annotations("v"))

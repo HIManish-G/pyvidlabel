@@ -497,3 +497,34 @@ def test_proposals_need_the_same_protections_as_other_changes(env):
     c, ds, st = env
     r = c.post("/api/proposals/adopt", json={"author": "agent:x"}, headers={"X-Vidlabel-Author": "ana"})       # no X-Requested-With
     assert r.status_code in (400, 403)
+
+
+def test_proposals_page_api_edge_cases(env):
+    c, ds, st = env
+    from vidlabel.agent import AgentSession
+    anon = TestClient(c.app, base_url="http://127.0.0.1:8765")
+    assert anon.get("/api/proposals").status_code == 401                           # token needed to even look
+    assert c.get("/api/proposals").json()["proposals"] == []
+    ag = AgentSession(ds.path, "scout")
+    ag.propose_boxes("clip", [{"frame": 31, "label": "thing", "box": [2, 2, 20, 20], "track_id": 5},
+                              {"frame": 32, "label": "thing", "box": [2, 2, 20, 20], "track_id": 5}])
+    AgentSession(ds.path, "second").propose_spans("clip", [{"start_frame": 3, "end_frame": 8, "label": "other"}])
+    assert c.get("/api/dataset").json()["proposals"] == 3
+    assert post(c, "/api/proposals/adopt", {}).status_code == 400                           # which agent?
+    assert post(c, "/api/proposals/adopt", {"author": "nobody"}).status_code == 400
+    assert post(c, "/api/proposals/adopt", {"author": "agent:scout", "video_id": "no-such-video"}).status_code == 400
+    assert post(c, "/api/proposals/discard", {"author": "agent:scout", "video_id": "no-such-video"}).status_code == 400
+    assert c.get("/api/dataset").json()["proposals"] == 3                                   # nothing was lost by the refusals
+    r = post(c, "/api/proposals/adopt", {"author": "agent:scout", "video_id": "clip"})
+    assert r.status_code == 200 and r.json()["taken"] == 2
+    d = c.get("/api/draft", headers=H).json()
+    assert d["summary"]["added"] == 2 and len(d["ops"]) == 2
+    assert post(c, "/api/draft/undo", {}).status_code == 200                                # the person can undo a take-in step by step
+    assert post(c, "/api/draft/redo", {}).status_code == 200
+    r = post(c, "/api/proposals/discard", {"author": "agent:second"})
+    assert r.status_code == 200 and c.get("/api/dataset").json()["proposals"] == 0
+    r = post(c, "/api/draft/commit", {"message": "agent pass"})
+    assert r.status_code == 200
+    after = Dataset.open(ds.path)
+    assert len(after.annotations("clip", track_id=5)) == 2
+    assert {r["author"] for r in after.annotations("clip", track_id=5).to_pylist()} == {"agent:scout"}

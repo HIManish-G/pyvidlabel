@@ -17,7 +17,7 @@ vidlabel can be used by an AI agent in two ways, and in both the rule is the sam
 | take back its own pending proposals | commit anything |
 
 Every proposal is checked by the library before it is recorded, like a row drawn by hand: the label must exist, the box must be inside the
-frame, the frame must exist, confidence must be between 0 and 1, and a track can have only one box (or mask) on a frame. A call is **all or
+frame, the frame must exist, numbers must be real numbers (not text, true/false, NaN or infinity), frames and track ids whole numbers, confidence must be between 0 and 1, and a track can have only one box (or mask) on a frame. A call is **all or
 nothing**: if one item is refused, none of the call is recorded, and the agent is told which item was wrong and why. One agent can hold at most
 20,000 pending rows.
 
@@ -47,6 +47,8 @@ For Claude Code: `claude mcp add vidlabel -- vidlabel mcp /path/to/dataset --nam
 (common on Windows), give the full path to it inside your virtual environment, or use `python -m vidlabel.mcp_server /path/to/dataset --name my-agent`.
 
 `--name` becomes the author of the proposals (`agent:my-agent`). Use a different name for each agent or each run you want to review separately.
+Names are kept to lower-case letters, digits, `-` and `_`; if a name has to be changed (capitals, spaces, other characters), a short code is
+added so two different names never share a draft.
 The server talks over standard input and output and runs only while the agent's client is connected.
 
 ## The tools
@@ -91,7 +93,7 @@ vidlabel build DATASET --json
 vidlabel query DATASET VIDEO --kind box --label car --frames 100-200 --limit 50     # always JSON
 ```
 
-With `--json`, an error is also JSON, `{"ok": false, "error": "..."}`, with exit code 1. Annotation ids are strings (they can exceed what
+With `--json` (and always for `query`), an error is also JSON, `{"ok": false, "error": "..."}`, with exit code 1. Annotation ids are strings (they can exceed what
 JavaScript numbers hold), and `query` never prints mask pixels (`has_mask` tells you a row has one).
 
 ## Limits

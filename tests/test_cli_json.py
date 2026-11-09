@@ -68,3 +68,33 @@ def test_query_filters_pages_and_never_sends_mask_pixels(path):
 def test_mcp_command_refuses_a_folder_that_is_not_a_dataset(tmp_path):
     r = run(app, ["mcp", str(tmp_path)])
     assert r.exit_code == 1 and "[error]" in r.output
+
+
+def test_query_errors_are_json_too_and_odd_filters_are_refused(path):
+    for args, text in ((["nope"], "nope"), (["v", "--kind", "circle"], "unknown kind"), (["v", "--status", "zzz"], "unknown status"),
+                       (["v", "--frames", "x-y"], "--frames must look like")):
+        r = run(app, ["query", path, *args]) if args[0] != "nope" else run(app, ["query", path, "nope"])
+        d = _json(r)
+        assert r.exit_code == 1 and d["ok"] is False and text in d["error"]
+    d = _json(run(app, ["query", path, "v", "--frames", "4"]))
+    assert d["total"] == 1                                              # a single frame
+    r = run(app, ["query", path, "v", "--label", "nope"])
+    assert r.exit_code == 1 and "no label 'nope'" in _json(r)["error"]
+    assert _json(run(app, ["query", path, "v", "--origin", "human"]))["total"] == 1
+    assert _json(run(app, ["query", path, "v", "--limit", "0"]))["returned"] == 1       # a limit below 1 still returns one row
+    assert _json(run(app, ["query", path, "v", "--offset", "-4", "--limit", "3"]))["offset"] == 0
+    r = run(app, ["query", path, "v", "--view", "nope"])
+    assert r.exit_code == 1 and "no view 'nope'" in _json(r)["error"]
+
+
+def test_query_shows_masks_without_their_pixels(tmp_path):
+    import numpy as np
+    ds = Dataset.create(tmp_path / "m")
+    ds.add_video(VideoMetadata(video_id="v", frame_count=5, fps={"num": 25, "den": 1}, width=32, height=24))
+    ds.add_labels(["a"])
+    m = np.zeros((24, 32), bool)
+    m[5:15, 5:20] = True
+    ds.add_annotations([{"kind": "mask", "label": "a", "start_frame": 1, "mask": m, "origin": "human"}], "v")
+    d = _json(run(app, ["query", str(ds.path), "v"]))
+    row = d["rows"][0]
+    assert row["has_mask"] is True and "mask" not in row and "mask_codec" not in row and len(json.dumps(d)) < 2000

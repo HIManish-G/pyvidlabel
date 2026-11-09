@@ -30,8 +30,14 @@ class AgentError(ValueError):
 
 
 def agent_author(name: str | None) -> str:
-    n = "".join(c for c in (name or "agent").strip() if c.isalnum() or c in "-_.") or "agent"
-    return "agent:" + n[:40]
+    """`agent:<name>`. The name is reduced to lower-case letters, digits, `-` and `_`; if anything had to be changed, a short hash of the
+    original is added, so two different names never share a draft (also on case-insensitive disks)."""
+    import hashlib
+    raw = (name or "").strip() or "agent"
+    kept = "".join(c for c in raw.lower() if c in "abcdefghijklmnopqrstuvwxyz0123456789-_")[:32]
+    if kept != raw:
+        kept = (kept + "-" if kept else "") + hashlib.sha1(raw.encode("utf-8")).hexdigest()[:6]
+    return "agent:" + kept
 
 
 def _id_out(i: Any) -> Any:
@@ -45,6 +51,32 @@ def _row_out(r: dict) -> dict:
     if "_pending" in o:
         o["pending"] = o.pop("_pending")
     return {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in o.items()}
+
+
+def _at(i):
+    return "" if i is None else f"item {i}: "
+
+
+def _int(v: Any, what: str, i: int | None, lo: int = 0, hi: int = 2**53) -> int:
+    """A whole number (`3` or `3.0`; not true/false, text, 1.5 or something huge)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or (isinstance(v, float) and not v.is_integer()):
+        raise AgentError(f"{_at(i)}{what} must be a whole number, got {v!r}")
+    v = int(v)
+    if not lo <= v <= hi:
+        raise AgentError(f"{_at(i)}{what} {v} is out of range ({lo} to {hi})")
+    return v
+
+
+def _number(v: Any, what: str, i: int | None) -> float:
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not np.isfinite(v):
+        raise AgentError(f"{_at(i)}{what} must be a finite number, got {v!r}")
+    return float(v)
+
+
+def _label(v: Any, i: int) -> str:
+    if not isinstance(v, str) or not v.strip():
+        raise AgentError(f"item {i}: label must be a text, got {v!r}. Use one of the labels from `overview`")
+    return v
 
 
 class AgentSession:
@@ -68,23 +100,33 @@ class AgentSession:
                          origin: str | None = None, track_id: int | None = None, frame_start: int | None = None,
                          frame_end: int | None = None, view_id: str | None = None, limit: int = 100, offset: int = 0) -> dict:
         self._video(video_id)
+        if label is not None and label not in {l.name for l in self.ds.vocab.labels}:
+            raise AgentError(f"no label '{label}'. Labels: {[l.name for l in self.ds.vocab.labels]}")
+        if view_id is not None and view_id not in self.ds.view_ids():
+            raise AgentError(f"no view '{view_id}'. Views: {self.ds.view_ids()}")
+        if track_id is not None:
+            track_id = _int(track_id, "track_id", None)
+        limit, offset = _int(limit, "limit", None, -10**9, 10**9), _int(offset, "offset", None, -10**9, 10**12)
         filters: dict[str, Any] = {"view_id": [view_id]}
         for k, v in (("kind", kind), ("label", label), ("status", status), ("origin", origin), ("track_id", track_id)):
             if v is not None:
                 filters[k] = v
         if frame_start is not None or frame_end is not None:
-            lo = 0 if frame_start is None else int(frame_start)
-            filters["frames"] = (lo, int(frame_end) if frame_end is not None else self.ds.video(video_id).frame_count)
+            lo = 0 if frame_start is None else _int(frame_start, "frame_start", None, -10**9, 2**53)
+            hi = self.ds.video(video_id).frame_count if frame_end is None else _int(frame_end, "frame_end", None, -10**9, 2**53)
+            filters["frames"] = (lo, hi)
         try:
             rows = D.Draft.load(self.ds, self.author).rows(video_id, include_deleted=False, **filters)
         except (D.DraftError, ValueError) as e:
             raise AgentError(str(e)) from None
-        limit = max(1, min(int(limit), MAX_LIST))
-        part = rows[max(0, int(offset)):max(0, int(offset)) + limit]
-        return {"video_id": video_id, "total": len(rows), "offset": int(offset), "returned": len(part), "rows": [_row_out(r) for r in part]}
+        limit, offset = max(1, min(limit, MAX_LIST)), max(0, offset)
+        part = rows[offset:offset + limit]
+        return {"video_id": video_id, "total": len(rows), "offset": offset, "returned": len(part), "rows": [_row_out(r) for r in part]}
 
     def list_tracks(self, video_id: str, view_id: str | None = None) -> dict:
         self._video(video_id)
+        if view_id is not None and view_id not in self.ds.view_ids():
+            raise AgentError(f"no view '{view_id}'. Views: {self.ds.view_ids()}")
         return {"video_id": video_id, "tracks": self.ds.tracks(video_id, view_id=view_id)}
 
     def validate(self, deep: bool = False) -> dict:
@@ -97,7 +139,8 @@ class AgentSession:
         from .frames import FrameReader
         from .preview import draw_annotations
         meta = self._video(video_id)
-        frame = int(frame)
+        frame = _int(frame, "frame", None, -10**9, 2**53)
+        max_side = _int(max_side, "max_side", None, -10**9, 10**9)
         if not 0 <= frame < meta.frame_count:
             raise AgentError(f"video '{video_id}' has frames 0 to {meta.frame_count - 1}; there is no frame {frame}")
         path = self.ds.resolve_video_path(video_id, [])
@@ -111,7 +154,7 @@ class AgentSession:
         if annotations:
             rows = D.Draft.load(self.ds, self.author).rows(video_id, include_deleted=False, frames=(frame, frame), view_id=[None])
             rgb = draw_annotations(rgb, rows, frame)
-        max_side = max(16, min(int(max_side), 2048))
+        max_side = max(16, min(max_side, 2048))
         if max(rgb.shape[:2]) > max_side:
             s = max_side / max(rgb.shape[:2])
             rgb = cv2.resize(rgb, (round(rgb.shape[1] * s), round(rgb.shape[0] * s)), interpolation=cv2.INTER_AREA)
@@ -129,12 +172,13 @@ class AgentSession:
             self._need(b, ("frame", "label", "box"), i)
             self._only(b, ("frame", "label", "box", "track_id", "confidence"), i)
             bx = b["box"]
-            if not (isinstance(bx, (list, tuple)) and len(bx) == 4 and all(isinstance(v, (int, float)) for v in bx)):
+            if not (isinstance(bx, (list, tuple)) and len(bx) == 4):
                 raise AgentError(f"item {i}: box must be [x0, y0, x1, y1]")
+            bx = [_number(v, "every box value", i) for v in bx]
             if bx[0] < 0 or bx[1] < 0 or bx[2] > W or bx[3] > H:                       # an agent that guesses coordinates is caught here
                 raise AgentError(f"item {i}: box {list(bx)} is outside the frame (0 to {W} wide, 0 to {H} high). Boxes use the video's own pixels")
-            r = {"kind": "box", "label": b["label"], "start_frame": b["frame"], "box": b["box"]}
-            rows.append(self._with_common(r, b))
+            r = {"kind": "box", "label": _label(b["label"], i), "start_frame": self._frame(video_id, b["frame"], i), "box": tuple(bx)}
+            rows.append(self._with_common(r, b, i))
         return self._record(video_id, rows, note)
 
     def propose_spans(self, video_id: str, spans: Sequence[dict], note: str | None = None) -> dict:
@@ -143,10 +187,9 @@ class AgentSession:
         for i, s in enumerate(self._items(spans, "spans")):
             self._need(s, ("start_frame", "end_frame", "label"), i)
             self._only(s, ("start_frame", "end_frame", "label", "confidence"), i)
-            r = {"kind": "marker", "label": s["label"], "start_frame": s["start_frame"], "end_frame": s["end_frame"]}
-            if s.get("confidence") is not None:
-                r["confidence"] = s["confidence"]
-            rows.append(self._with_common(r, {}))
+            r = {"kind": "marker", "label": _label(s["label"], i), "start_frame": self._frame(video_id, s["start_frame"], i),
+                 "end_frame": self._frame(video_id, s["end_frame"], i)}
+            rows.append(self._with_common(r, s, i))
         return self._record(video_id, rows, note)
 
     def propose_masks(self, video_id: str, masks: Sequence[dict], note: str | None = None) -> dict:
@@ -158,8 +201,8 @@ class AgentSession:
             self._need(m, ("frame", "label", "polygon"), i)
             self._only(m, ("frame", "label", "polygon", "track_id", "confidence"), i)
             pts = self._polygon(m["polygon"], W, H, i)
-            r = {"kind": "mask", "label": m["label"], "start_frame": m["frame"], "mask": _fill_polygon(pts, W, H)}
-            rows.append(self._with_common(r, m))
+            r = {"kind": "mask", "label": _label(m["label"], i), "start_frame": self._frame(video_id, m["frame"], i), "mask": _fill_polygon(pts, W, H)}
+            rows.append(self._with_common(r, m, i))
         return self._record(video_id, rows, note)
 
     def retract(self, ids: Sequence[Any]) -> dict:
@@ -214,12 +257,22 @@ class AgentSession:
         if extra:
             raise AgentError(f"item {i}: not allowed here: {extra}. Allowed: {list(allowed)} (origin, status and author are set for you)")
 
+    def _frame(self, video_id: str, v: Any, i: int) -> int:
+        n = self.ds.video(video_id).frame_count
+        f = _int(v, "frame", i, 0, 2**53)
+        if f >= n:
+            raise AgentError(f"item {i}: frame {f} does not exist; video '{video_id}' has frames 0 to {n - 1}")
+        return f
+
     @staticmethod
-    def _with_common(r: dict, src: dict) -> dict:
+    def _with_common(r: dict, src: dict, i: int) -> dict:
         if src.get("track_id") is not None:
-            r["track_id"] = src["track_id"]
+            r["track_id"] = _int(src["track_id"], "track_id", i, 0, 2**53)
         if src.get("confidence") is not None:
-            r["confidence"] = src["confidence"]
+            c = _number(src["confidence"], "confidence", i)
+            if not 0 <= c <= 1:
+                raise AgentError(f"item {i}: confidence must be between 0 and 1, got {c}")
+            r["confidence"] = c
         r["origin"] = "model"                          # fixed: an agent's rows are never "human"
         r["status"] = "unreviewed"                     # fixed: only a person approves or rejects
         return r
@@ -236,12 +289,15 @@ class AgentSession:
             raise AgentError(f"item {i}: polygon corners must lie inside the frame (0 to {W} wide, 0 to {H} high)")
         x, y = pts[:, 0], pts[:, 1]
         if abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))) / 2 < 1:
-            raise AgentError(f"item {i}: the polygon has no area (all corners on one line or point)")
+            raise AgentError(f"item {i}: the polygon has no area (corners on one line or point, or the outline crosses itself and cancels out)")
         return pts
 
     def _record(self, video_id: str, rows: list[dict], note: str | None) -> dict:
         """All or nothing: put every row in the draft, or none of them."""
         self._video(video_id)
+        if note is not None and not isinstance(note, str):
+            raise AgentError("note must be text")
+        note = (note.strip()[:300] or None) if note else None
         d = D.Draft.load(self.ds, self.author)
         pending = d.summary()["added"]
         if pending + len(rows) > MAX_PENDING_ROWS:
