@@ -3,6 +3,17 @@
 The spec version and the library version move together. "Spec" entries change the files; "Library" entries change behaviour only.
 0.6.0 is the first release published to PyPI (alpha). Earlier versions were internal milestones.
 
+## 0.6.1 (2026-11)
+
+The format is unchanged (spec 0.6.0); the packages are versioned 0.6.1.
+
+**Library**
+- `vidlabel --help` names the `ui` extra correctly (the help renderer used to drop the bracketed extra name).
+- `vidlabel query` names the available video ids when it is given something that is not one, and says when the argument looks like a file path.
+- Web interface dialogs take focus as soon as they open, and Escape closes the topmost dialog even before focus has reached it.
+- PyPI project pages: package descriptions, classifiers (alpha) and project links.
+- Documentation reworded for readers: install instructions use `pip install vidlabel`.
+
 ## 0.6.0 (2026-11)
 
 **Spec**

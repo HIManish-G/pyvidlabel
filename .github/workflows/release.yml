@@ -1,10 +1,12 @@
 name: release
-# Publishes both packages to PyPI when a tag such as v0.6.0 is pushed.
-# Uses PyPI trusted publishing (no API token): configure a publisher for each project on pypi.org
-# (owner HIManish-G, repository pyvidlabel, workflow release.yml, environment pypi).
+# Publishes both packages to PyPI when a version tag such as v0.6.1 is pushed (or when started by hand from the Actions tab).
+# Uses PyPI trusted publishing, so no API token is stored anywhere. One-time setup on pypi.org, for each of the projects
+# `vidlabel` and `vidlabel-spec` (Manage -> Publishing -> GitHub): owner HIManish-G, repository pyvidlabel,
+# workflow release.yml, environment pypi.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -12,11 +14,25 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
+      - name: The tag must match the package versions
+        run: |
+          python - <<'PY'
+          import os, re, tomllib
+          want = os.environ.get("GITHUB_REF_NAME", "")
+          for p in ("packages/vidlabel-spec", "packages/vidlabel"):
+              v = tomllib.load(open(p + "/pyproject.toml", "rb"))["project"]["version"]
+              if os.environ.get("GITHUB_REF_TYPE") == "tag" and want != "v" + v:
+                  raise SystemExit(f"tag {want} does not match {p} version {v}")
+              print(p, v)
+          lib = tomllib.load(open("packages/vidlabel/pyproject.toml", "rb"))["project"]
+          spec = tomllib.load(open("packages/vidlabel-spec/pyproject.toml", "rb"))["project"]["version"]
+          assert f"vidlabel-spec=={spec}" in lib["dependencies"], "vidlabel must pin vidlabel-spec to its own version"
+          PY
       - run: pip install build twine
       - run: |
-          python -m build -o dist packages/vidlabel-spec
-          python -m build -o dist packages/vidlabel
-      - run: twine check dist/*
+          python -m build -o dist/spec packages/vidlabel-spec
+          python -m build -o dist/lib packages/vidlabel
+      - run: twine check dist/spec/* dist/lib/*
       - uses: actions/upload-artifact@v4
         with: { name: dist, path: dist/ }
   publish:
@@ -28,4 +44,9 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with: { name: dist, path: dist/ }
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Publish vidlabel-spec first (vidlabel pins it)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with: { packages-dir: dist/spec/ }
+      - name: Publish vidlabel
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with: { packages-dir: dist/lib/ }

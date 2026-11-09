@@ -4,7 +4,7 @@ An open, directory-based format and Python library for **video annotation data**
 boxes, masks, tracks and labels, all in one annotation table. It is meant to be the thing that sits between your
 labelling tools and your training code.
 
-> **Status:** version 0.6.0, alpha, published on PyPI (`pip install vidlabel`). The test suite passes in CI on Linux, Windows and macOS; see
+> **Status:** version 0.6.1, format version 0.6.0, alpha, published on PyPI (`pip install vidlabel`). The test suite passes in CI on Linux, Windows and macOS; see
 > [what is and is not verified](#what-is-and-is-not-verified).
 
 ## The idea in one minute

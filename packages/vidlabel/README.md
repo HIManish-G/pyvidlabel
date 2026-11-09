@@ -3,7 +3,7 @@
 An open, directory-based format and Python library for **video annotation data**: time markers and spans, bounding boxes,
 masks, tracks and labels in one annotation table (JSON + Parquet). Video pixels are not stored; datasets point at your videos.
 
-**Status: alpha (0.6.0).** The format and API can still change between minor versions; see the
+**Status: alpha (0.6.1).** The format and API can still change between minor versions; see the
 [changelog](https://github.com/HIManish-G/pyvidlabel/blob/main/docs/changelog.md).
 
 ```

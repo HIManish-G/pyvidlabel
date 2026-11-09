@@ -78,8 +78,11 @@ cp wiki-out/*.md REPO.wiki/ && cd REPO.wiki && git add -A && git commit -m "Upda
 2. Run the full suite on all three operating systems in CI.
 3. Build both packages and test installing the wheels in a clean environment:
    `python -m build -o dist packages/vidlabel-spec && python -m build -o dist packages/vidlabel && twine check dist/*`.
-4. Publish the spec package first and then the library. Either push a tag (`git tag v0.6.0 && git push origin v0.6.0`), which runs
-   `.github/workflows/release.yml` with PyPI trusted publishing, or upload by hand with `twine upload dist/vidlabel_spec-* ` and then `twine upload dist/vidlabel-*`.
+4. Publish by pushing a tag that matches the version: `git tag v0.6.1 && git push origin v0.6.1`. `.github/workflows/release.yml` checks that
+   the tag matches both packages, builds them, and publishes the spec package first and then the library (it pins the spec exactly) using PyPI
+   trusted publishing. It can also be started by hand from the Actions tab. A version already on PyPI cannot be uploaded again, so a fix is a new version.
+   One-time setup, for each of the projects `vidlabel` and `vidlabel-spec` on pypi.org (Manage, then Publishing, then GitHub): owner `HIManish-G`,
+   repository `pyvidlabel`, workflow `release.yml`, environment `pypi`. Manual upload also works: `twine upload dist/vidlabel_spec-*` and then `twine upload dist/vidlabel-*`.
 5. Publish the wiki.
 
 Pre-release versions are marked in `pyproject.toml` by the `Development Status` classifier; the version number itself follows the changelog.
