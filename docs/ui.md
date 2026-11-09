@@ -59,6 +59,7 @@ is unaffected, but drafts and history are lost.
 | Review | the tracks of one video with a thumbnail, confidence, status and origin; filter, sort by lowest confidence, approve, reject or delete one track or many at once |
 | Validation | the quick check at once; the full check (decodes every mask) as a background job with a progress bar |
 | Releases | the existing releases, building a new one (choose which statuses to include), and an inspector showing the training targets for any frame |
+| Proposals | rows that [AI agents](agents.md) proposed; take them into your draft (all, or one video's) or throw them away; a badge shows how many wait |
 | History | past commits and Revert |
 
 Adding labels, views and videos, copying labels into a view, indexing and caching are applied at once (they only add, and the library has no

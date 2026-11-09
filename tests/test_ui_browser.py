@@ -540,3 +540,28 @@ def test_a_slow_page_never_overwrites_the_page_you_moved_to(page):
     pg.wait_for_timeout(2500)                                 # let the slow page finish
     assert pg.locator("h1").first.inner_text().strip().lower().startswith("history")
     assert not pg.errors
+
+
+def test_proposals_page_takes_agent_rows_into_my_draft(page):
+    pg, ds, base = page
+    from vidlabel.agent import AgentSession
+    AgentSession(ds.path, "scout").propose_boxes("clip", [{"frame": 55, "label": "person", "box": [2, 2, 20, 20], "confidence": 0.6}],
+                                                  note="from the browser test")
+    pg.goto(f"{base}/#/overview")
+    pg.reload()
+    pg.wait_for_selector("#nav a:has-text('Proposals') .badge")
+    pg.click("#nav a:has-text('Proposals')")
+    pg.wait_for_selector("h1:has-text('Proposals')")
+    pg.wait_for_selector("text=from the browser test")
+    assert _draft_count(pg) == 0
+    pg.click("button:has-text('Take all into my draft')")
+    pg.click(".modal button:has-text('OK')")
+    pg.wait_for_selector(".toast:has-text('Taken into your draft')")
+    pg.wait_for_function("document.querySelector('#changes-count').textContent === '1'")
+    pg.wait_for_selector(".card.empty")                                     # nothing left waiting
+    assert not pg.locator("#nav a:has-text('Proposals') .badge").count()
+    _viewer(pg, base, 55)
+    pg.wait_for_selector(".annrow.pend")                                    # the proposal is a pending row in the viewer
+    assert pg.evaluate("V.rows.some(r => r.pending === 'added' && r.origin === 'model' && r.author === 'agent:scout')")
+    pg.evaluate("fetch('/api/draft/discard', {method: 'POST', headers: {'X-Requested-With': 'vidlabel', 'X-Vidlabel-Author': 'ana', 'Content-Type': 'application/json'}, body: '{}'})")
+    assert not pg.errors

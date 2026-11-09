@@ -35,6 +35,7 @@ SECTIONS: list[tuple[str, list[tuple[str, str, str]]]] = [
         ("releases.md", "Releases", "Releases"),
         ("validation.md", "Validation", "Validation"),
         ("ui.md", "Web-Interface", "Web interface"),
+        ("agents.md", "AI-Agents", "AI agents"),
         ("training.md", "Training", "Training"),
         ("converters.md", "Writing-a-Converter", "Writing a converter"),
     ]),

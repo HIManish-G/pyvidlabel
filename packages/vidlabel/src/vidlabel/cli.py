@@ -39,9 +39,20 @@ def _friendly(fn):
         except (OSError, ValueError, KeyError, RuntimeError, PydanticValidationError, subprocess.SubprocessError) as e:
             if os.environ.get("VIDLABEL_DEBUG"):
                 raise
-            typer.echo(f"[error] {_message(e)}")
+            if kwargs.get("json_out"):                              # a program is reading: errors are JSON too
+                _emit({"ok": False, "error": _message(e)})
+            else:
+                typer.echo(f"[error] {_message(e)}")
             raise typer.Exit(1)
     return wrapper
+
+
+def _emit(obj) -> None:
+    """One JSON document on standard output, for programs and agents (`--json`)."""
+    typer.echo(json.dumps(obj, default=str, ensure_ascii=False))
+
+
+JSON_OPT = typer.Option(False, "--json", help="Print one JSON document instead of text (for programs and agents).")
 
 
 def _command(*args, **kwargs):
@@ -57,9 +68,11 @@ def init(path: Path):
 
 
 @_command()
-def info(path: Path):
+def info(path: Path, json_out: bool = JSON_OPT):
     """Show what is in a dataset."""
     s = Dataset.open(path).stats()
+    if json_out:
+        return _emit(s)
     typer.echo(f"videos: {s['videos']}   views: {s['views']}   annotations: {s['annotations']}   vocab: {s['labels_in_vocab']}")
     for key in ("by_kind", "by_origin", "by_status"):
         if not s[key]:
@@ -79,22 +92,29 @@ def info(path: Path):
 
 
 @_command()
-def validate(path: Path, deep: bool = typer.Option(False, help="Also decode every mask and cross-check its box.")):
+def validate(path: Path, deep: bool = typer.Option(False, help="Also decode every mask and cross-check its box."), json_out: bool = JSON_OPT):
     """Check a dataset against the spec. Exit code 1 if there are errors."""
     from .validate import validate_dataset
     issues = validate_dataset(path, deep=deep)      # not Dataset.open: a missing or broken manifest is reported as an issue
+    n_err = sum(i.level == "error" for i in issues)
+    if json_out:
+        _emit({"ok": n_err == 0, "errors": n_err, "warnings": len(issues) - n_err,
+               "issues": [{"level": i.level, "code": i.code, "message": i.message, "count": i.count} for i in issues]})
+        raise typer.Exit(1 if n_err else 0)
     for i in issues:
         typer.echo(str(i))
-    n_err = sum(i.level == "error" for i in issues)
     typer.echo(f"{n_err} error(s), {len(issues) - n_err} warning(s)")
     raise typer.Exit(1 if n_err else 0)
 
 
 @_command()
-def build(path: Path, include_rejected: bool = typer.Option(False, help="Also put rejected annotations in the release.")):
+def build(path: Path, include_rejected: bool = typer.Option(False, help="Also put rejected annotations in the release."), json_out: bool = JSON_OPT):
     """Compile the sorted training table; prints the release id to pin."""
     statuses = ("unreviewed", "approved", "rejected") if include_rejected else ("unreviewed", "approved")
     rel, out = Dataset.open(path).build(statuses=statuses)
+    if json_out:
+        return _emit({"release_id": rel.release_id, "rows": rel.n_rows, "videos": rel.n_videos, "path": str(out),
+                      "includes_rejected": include_rejected, "empty": rel.n_rows == 0})
     typer.echo(f"{rel.release_id}  rows={rel.n_rows} videos={rel.n_videos}  {out}")
     if include_rejected:
         typer.echo("[note] this release includes rejected rows, so 'latest' was not moved to it; refer to it by its id.")
@@ -186,9 +206,12 @@ def derive_view(path: Path, video_id: str, view_id: str,
 
 
 @_command()
-def tracks(path: Path, video_id: str, view: Optional[str] = typer.Option(None, help="Tracks made in this view (default: whole-frame rows).")):
+def tracks(path: Path, video_id: str, view: Optional[str] = typer.Option(None, help="Tracks made in this view (default: whole-frame rows)."),
+           json_out: bool = JSON_OPT):
     """List the tracks of a video: label, frames, how many rows, mean confidence and review status of each."""
     rows = Dataset.open(path).tracks(video_id, view_id=view)
+    if json_out:
+        return _emit({"video_id": video_id, "tracks": rows})
     if not rows:
         typer.echo("no tracks" + (f" in view '{view}'" if view else ""))
     for r in rows:
@@ -405,6 +428,42 @@ def cache_cmd(path: Path, out: Path,
                + (f"; {st.skipped} were already there" if st.skipped else "") + f" -> {out}")
     if format == "jpg":
         typer.echo("[note] jpg is lossy: pixels differ slightly from the video. Use --format png for exact pixels.")
+
+
+@_command()
+def query(path: Path, video_id: str,
+          kind: Optional[str] = typer.Option(None, help="box, mask or marker."), label: Optional[str] = typer.Option(None, help="Only this label."),
+          status: Optional[str] = typer.Option(None, help="unreviewed, approved or rejected."), origin: Optional[str] = typer.Option(None, help="human, model, imported, ..."),
+          track: Optional[int] = typer.Option(None, help="Only this track id."), frames: Optional[str] = typer.Option(None, help="A frame range such as 100-200."),
+          view: Optional[str] = typer.Option(None, help="Rows made in this view (default: whole-frame rows)."),
+          limit: int = typer.Option(100, help="At most this many rows."), offset: int = typer.Option(0, help="Skip this many rows first.")):
+    """Print the annotations of one video as JSON (ids are strings; mask pixels are left out). For scripts and agents."""
+    ds = Dataset.open(path)
+    ds.video(video_id)
+    kw: dict = {"view_id": [view]}
+    for k, v in (("kind", kind), ("label", label), ("status", status), ("origin", origin), ("track_id", track)):
+        if v is not None:
+            kw[k] = v
+    if frames:
+        a, _, b = frames.partition("-")
+        try:
+            kw["frames"] = (int(a), int(b or a))
+        except ValueError:
+            raise ValueError(f"--frames must look like 100-200, not '{frames}'") from None
+    rows = ds.annotations(video_id, **kw).to_pylist()
+    part = rows[max(0, offset):max(0, offset) + max(1, limit)]
+    out = [{k: (str(v) if k == "annotation_id" else v) for k, v in r.items() if k != "mask" and v is not None} | {"has_mask": r.get("mask") is not None}
+           for r in part]
+    _emit({"video_id": video_id, "total": len(rows), "offset": max(0, offset), "returned": len(out), "rows": out})
+
+
+@_command()
+def mcp(path: Path = typer.Argument(..., help="The dataset folder."),
+        name: str = typer.Option("agent", help="Who the agent is; its proposals are made by 'agent:NAME'.")):
+    """Serve the dataset to an AI agent over MCP (standard input and output). The agent can read and propose, never commit."""
+    from .mcp_server import serve
+    Dataset.open(path)                                       # fail now, in plain words, if this is not a dataset
+    serve(path, name)
 
 
 @_command()

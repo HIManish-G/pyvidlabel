@@ -73,4 +73,4 @@ in another test, resized 256x256 crops came back with a mean IoU of about 0.94.
 ## Not measured
 
 Parquet against other table formats at large scale, several simultaneous writers, many-GPU training, real variable-frame-rate datasets,
-and Windows and macOS timings. See [limitations](limitations.md).
+and Windows and macOS timings (the tests run there in CI, but nothing was timed). See [limitations](limitations.md).

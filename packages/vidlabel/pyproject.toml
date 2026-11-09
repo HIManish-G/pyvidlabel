@@ -20,6 +20,7 @@ dependencies = [
 [project.optional-dependencies]
 video = ["opencv-python-headless>=4.8"]
 ui = ["starlette>=0.37", "uvicorn>=0.29", "opencv-python-headless>=4.8"]
+mcp = ["mcp>=1.2", "opencv-python-headless>=4.8"]
 torch = ["opencv-python-headless>=4.8", "torch>=2.0"]
 
 [project.scripts]

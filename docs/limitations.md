@@ -33,7 +33,7 @@ An honest list of what vidlabel does not do, what has not been verified, and wha
 
 | area | status |
 |---|---|
-| Windows and macOS | CI workflow written, never run there |
+| Windows and macOS | tested in CI only (Python 3.12), not by hand; no timings |
 | codecs and containers other than H.264 in MP4 | untested |
 | real variable-frame-rate datasets | the logic is tested on constructed files only |
 | Parquet against alternatives (Lance and others) at scale | no head-to-head benchmark |
@@ -45,10 +45,9 @@ An honest list of what vidlabel does not do, what has not been verified, and wha
 
 ## Roadmap (not promises)
 
-1. Run and fix the Windows and macOS CI jobs.
-2. Polish of the local web interface: an accessibility review, more shortcuts, drawing directly inside a view ([design](ui-design.md)).
-3. Publish to PyPI under a final name; add a changelog automation and a signed release process.
-4. Decide on image collections (many images in one table) if people ask for them: single images already work as one-frame videos.
-5. More annotation kinds (keypoints, polygons) if a clear need appears; each needs a spec change and validator rules.
+1. Polish of the local web interface: an accessibility review, more shortcuts, drawing directly inside a view ([design](ui-design.md)).
+2. Publish to PyPI under a final name; add a changelog automation and a signed release process.
+3. Decide on image collections (many images in one table) if people ask for them: single images already work as one-frame videos.
+4. More annotation kinds (keypoints, polygons) if a clear need appears; each needs a spec change and validator rules.
 
 Have a case that does not fit? The `extra` field and `x-` origins exist so that you do not have to wait for the format to change.

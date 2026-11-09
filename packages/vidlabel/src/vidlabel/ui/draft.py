@@ -255,8 +255,9 @@ class Draft:
         base = set(self.ds.annotations(video_id, columns=["annotation_id"]).column("annotation_id").to_pylist())
         return (base - st.deleted) | set(st.adds)
 
-    def add(self, video_id: str, row: Mapping[str, Any], *, coords: str = "source") -> str:
-        """Record a new annotation; returns its temporary id. The row is checked now against the video, labels and views."""
+    def add(self, video_id: str, row: Mapping[str, Any], *, coords: str = "source", note: str | None = None) -> str:
+        """Record a new annotation; returns its temporary id. The row is checked now against the video, labels and views.
+        `note` is a short free-text reason kept with the edit (shown to whoever reviews it); it is not stored in the dataset."""
         r = _json_row(row)
         if coords == "view":
             raise DraftError("draw in full-frame coordinates (the interface converts view pixels before recording)")
@@ -288,8 +289,10 @@ class Draft:
                 row_json[k] = stored[k]
         tmp = f"p{self.next_tmp}"
         self.next_tmp += 1
-        self._record({"op": "add", "video_id": video_id, "tmp": tmp, "row": row_json,
-                      "label": f"add {r['kind']} '{r['label']}' at frame {r['start_frame']}"})
+        op = {"op": "add", "video_id": video_id, "tmp": tmp, "row": row_json, "label": f"add {r['kind']} '{r['label']}' at frame {r['start_frame']}"}
+        if note:
+            op["note"] = str(note)[:300]
+        self._record(op)
         return tmp
 
     def _check_ids(self, video_id: str, ids: Iterable[Any]) -> list:
@@ -452,7 +455,8 @@ class Draft:
 
     def state(self) -> dict:
         return {"author": self.author, "can_undo": self.can_undo, "can_redo": self.can_redo, "cursor": self.cursor,
-                "ops": [{"index": i, "label": o["label"], "video_id": o["video_id"], "kind": o["op"], "undone": i >= self.cursor}
+                "ops": [{"index": i, "label": o["label"], "video_id": o["video_id"], "kind": o["op"], "undone": i >= self.cursor,
+                         **({"note": o["note"]} if o.get("note") else {})}
                         for i, o in enumerate(self.ops)],
                 "summary": self.summary()}
 
@@ -616,6 +620,98 @@ def _prune(hist: Path, keep: int = HISTORY_LIMIT) -> None:
 
 
 # ---------------------------------------------------------------- history and revert
+# ---------------------------------------------------------------- an agent's proposals (drafts of authors named `agent:...`)
+def _other_drafts(ds: Dataset, me: str) -> list["Draft"]:
+    folder = ds.path / STATE_DIR / "drafts"
+    out = []
+    for f in sorted(folder.glob("*.json")) if folder.exists() else []:
+        try:
+            author = json.loads(f.read_text(encoding="utf-8")).get("author") or f.stem
+        except (OSError, ValueError):
+            continue
+        if not author.startswith("agent:") or _safe_name(author) == _safe_name(me):   # people's drafts are theirs alone
+            continue
+        d = Draft.load(ds, author)
+        if d.ops[:d.cursor]:
+            out.append(d)
+    return out
+
+
+def proposals(ds: Dataset, me: str, *, preview: int = 200) -> list[dict]:
+    """What agents (authors named `agent:...`) have proposed, to be taken into your draft. A person's draft is never touched by someone
+    else. Only added rows can be taken over."""
+    res = []
+    for d in _other_drafts(ds, me):
+        active = d.ops[:d.cursor]
+        adds = [o for o in active if o["op"] == "add"]
+        rows = [{"video_id": o["video_id"], "kind": o["row"]["kind"], "label": o["row"]["label"], "start_frame": o["row"]["start_frame"],
+                 "end_frame": o["row"].get("end_frame", o["row"]["start_frame"]), "track_id": o["row"].get("track_id"),
+                 "confidence": o["row"].get("confidence"), "origin": o["row"].get("origin"), "note": o.get("note")} for o in adds[:preview]]
+        by_video: dict[str, int] = {}
+        for o in adds:
+            by_video[o["video_id"]] = by_video.get(o["video_id"], 0) + 1
+        res.append({"author": d.author, "is_agent": d.author.startswith("agent:"), "adds": len(adds), "other_edits": len(active) - len(adds),
+                    "by_video": by_video, "rows": rows, "updated": d.path.stat().st_mtime if d.path.exists() else None})
+    return res
+
+
+def _row_to_add(row: Mapping[str, Any]) -> dict:
+    """A stored draft row in the form `Draft.add` takes."""
+    r = {k: v for k, v in row.items() if k not in ("mask_b64", "x0", "y0", "x1", "y1")}
+    if row.get("mask_b64"):
+        r["mask"] = base64.b64decode(row["mask_b64"])           # the library works the box out from the mask
+    elif row.get("x0") is not None and row.get("kind") != "marker":
+        r["box"] = [row["x0"], row["y0"], row["x1"], row["y1"]]
+    return r
+
+
+def _remove_ops(d: "Draft", indexes: set[int]) -> None:
+    d.cursor -= sum(1 for j in indexes if j < d.cursor)
+    d.ops = [o for j, o in enumerate(d.ops) if j not in indexes]
+    if not d.ops:
+        d.base = {}
+    d.save()
+
+
+def adopt(ds: Dataset, me: str, author: str, video_id: str | None = None) -> dict:
+    """Take an agent's added rows into your own draft (optionally only one video's). Each is checked again against the dataset as
+    your draft leaves it, exactly like a row you drew, and the whole take-over is all or nothing. Taken rows leave the other draft.
+    You still review them (they show as pending) and commit; nothing reaches the dataset here."""
+    other = next((d for d in _other_drafts(ds, me) if d.author == author), None)
+    if other is None:
+        raise DraftError(f"{author} has nothing waiting")
+    picks = [(j, o) for j, o in enumerate(other.ops[:other.cursor]) if o["op"] == "add" and (video_id is None or o["video_id"] == video_id)]
+    if not picks:
+        raise DraftError(f"{author} has no added rows" + (f" in video '{video_id}'" if video_id else "") + " to take in")
+    mine = Draft.load(ds, me)
+    snap = (list(mine.ops), mine.cursor, dict(mine.base), mine.next_tmp)
+    try:
+        for n, (j, o) in enumerate(picks, 1):
+            try:
+                mine.add(o["video_id"], _row_to_add(o["row"]), note=o.get("note"))
+            except (DraftError, ValueError, KeyError) as e:
+                raise DraftError(f"row {n} of {len(picks)} ({o['label']}) cannot be taken in: {e} Nothing was taken in.") from None
+    except DraftError:
+        mine.ops, mine.cursor, mine.base, mine.next_tmp = snap
+        mine.save()
+        raise
+    _remove_ops(other, {j for j, _ in picks})
+    return {"taken": len(picks), "left_with_author": len([o for o in other.ops[:other.cursor]])}
+
+
+def discard_proposals(ds: Dataset, me: str, author: str, video_id: str | None = None) -> dict:
+    """Throw away an agent's pending proposals (optionally one video's). Nothing in the dataset changes."""
+    other = next((d for d in _other_drafts(ds, me) if d.author == author), None)
+    if other is None:
+        raise DraftError(f"{author} has nothing waiting")
+    gone = {j for j, o in enumerate(other.ops) if video_id is None or o["video_id"] == video_id}
+    if not gone:
+        raise DraftError(f"{author} has nothing in video '{video_id}'")
+    _remove_ops(other, gone)
+    return {"discarded": len(gone)}
+
+
+
 def history(ds: Dataset, limit: int = HISTORY_LIMIT) -> list[dict]:
     """Past commits, newest first (at most the last 50 are kept)."""
     hist = ds.path / STATE_DIR / "history"

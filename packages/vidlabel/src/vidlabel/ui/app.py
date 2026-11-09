@@ -248,7 +248,8 @@ def dataset_info(state: UIState, ctx: Ctx):
     d = D.Draft.load(ds, ctx.author)
     return out({"path": str(ds.path), "spec_version": ds.manifest.spec_version, "library_version": __version__,
                 "stats": ds.stats(), "labels": [l.model_dump(exclude_none=True) for l in ds.vocab.labels],
-                "videos": ds.video_ids(), "views": ds.view_ids(), "releases": _releases(ds), "draft": d.state()["summary"]})
+                "videos": ds.video_ids(), "views": ds.view_ids(), "releases": _releases(ds), "draft": d.state()["summary"],
+                "proposals": sum(p["adds"] for p in D.proposals(ds, ctx.author, preview=0))})
 
 
 @route("GET", "/api/validate", covers=("validate", "Dataset.validate"))
@@ -357,7 +358,7 @@ def _rows(state: UIState, ctx: Ctx, video_id: str, filters: dict, use_draft: boo
     return ds.annotations(video_id, **filters).to_pylist()
 
 
-@route("GET", "/api/annotations", covers=("Dataset.annotations",))
+@route("GET", "/api/annotations", covers=("Dataset.annotations", "query"))
 def annotations(state: UIState, ctx: Ctx):
     ds = state.dataset()
     f = _filters(ctx)
@@ -622,6 +623,23 @@ def frame_image(state: UIState, ctx: Ctx):
         while state.frame_cache_bytes > FRAME_CACHE_LIMIT and len(state.frame_cache) > 1:
             state.frame_cache_bytes -= len(state.frame_cache.pop(next(iter(state.frame_cache))))
     return Response(data, media_type="image/jpeg", headers=headers)
+
+
+# ------------------------------------------------------------------ proposals from agents
+@route("GET", "/api/proposals")
+def proposals_list(state: UIState, ctx: Ctx):
+    return out({"proposals": D.proposals(state.dataset(), ctx.author)})
+
+
+@route("POST", "/api/proposals/adopt", write=True)
+def proposals_adopt(state: UIState, ctx: Ctx):
+    r = D.adopt(state.dataset(), ctx.author, str(ctx.need("author")), ctx.get("video_id") or None)
+    return {**r, "draft": out(_draft(state, ctx).state())}
+
+
+@route("POST", "/api/proposals/discard", write=True)
+def proposals_discard(state: UIState, ctx: Ctx):
+    return D.discard_proposals(state.dataset(), ctx.author, str(ctx.need("author")), ctx.get("video_id") or None)
 
 
 # ------------------------------------------------------------------ the draft

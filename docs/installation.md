@@ -7,8 +7,8 @@ vidlabel is two Python packages. They are installed from a source checkout for n
 | `vidlabel-spec` | the format: strict models for metadata, views, vocabulary, releases, the frame index | `pydantic` |
 | `vidlabel` | the library and the `vidlabel` command | the spec package, NumPy, PyArrow, zstandard, Typer |
 
-Python 3.10 or newer. The test suite is run on Python 3.10 to 3.13 on Linux in CI configuration, and on Windows and macOS
-in the same workflow, which has not been run there yet (see [compatibility](compatibility.md)).
+Python 3.10 or newer. The test suite is run in CI on Python 3.10 to 3.13 on Linux, and on Python 3.12 on Windows and macOS
+(see [compatibility](compatibility.md)).
 
 ## Choose what you need
 

@@ -302,7 +302,7 @@ def test_cache_job_and_sample_inspector(env, tmp_path):
 
 
 # ---------------------------------------------------------------- coverage of the CLI and library
-CLI_EXCLUDED = {"ui": "starts this server"}
+CLI_EXCLUDED = {"ui": "starts this server", "mcp": "serves AI agents over standard input and output"}
 API_EXCLUDED = {
     "Dataset.add_video_from_probe": "not a method", "Dataset.path": "property", "Dataset.close": "no-op",
 }
@@ -470,3 +470,30 @@ def test_old_frame_requests_are_dropped_and_cached_frames_are_reused(env):
     assert c.get("/api/frame/clip/8", params={"cid": "a", "seq": 6}).status_code == 200
     assert c.get("/api/frame/clip/9", params={"cid": "a", "seq": 4}).status_code == 204      # replaced by newer requests already
     assert c.get("/api/frame/clip/7", params={"cid": "a", "seq": 3}).status_code == 200      # but a cached frame is free to send
+
+
+# ---------------------------------------------------------------- agent proposals over HTTP
+def test_proposals_list_adopt_and_discard(env):
+    c, ds, st = env
+    from vidlabel.agent import AgentSession
+    ag = AgentSession(ds.path, "scout")
+    ag.propose_boxes("clip", [{"frame": 30, "label": "thing" if "thing" in {l.name for l in ds.vocab.labels} else ds.vocab.labels[0].name,
+                               "box": [2, 2, 20, 20], "confidence": 0.6}], note="seen by the agent")
+    info = c.get("/api/dataset").json()
+    assert info["proposals"] == 1
+    p = c.get("/api/proposals").json()["proposals"]
+    assert p[0]["author"] == "agent:scout" and p[0]["rows"][0]["note"] == "seen by the agent"
+    before = ds._ann_path("clip").read_bytes()
+    r = post(c, "/api/proposals/adopt", {"author": "agent:scout"})
+    assert r.status_code == 200 and r.json()["taken"] == 1 and r.json()["draft"]["summary"]["added"] == 1
+    assert ds._ann_path("clip").read_bytes() == before                      # taking in changes nothing in the dataset
+    assert c.get("/api/dataset").json()["proposals"] == 0
+    assert post(c, "/api/proposals/adopt", {"author": "agent:scout"}).status_code == 400
+    assert post(c, "/api/proposals/discard", {"author": "ana"}).status_code == 400       # a person's draft is not an agent's
+    post(c, "/api/draft/discard", {})
+
+
+def test_proposals_need_the_same_protections_as_other_changes(env):
+    c, ds, st = env
+    r = c.post("/api/proposals/adopt", json={"author": "agent:x"}, headers={"X-Vidlabel-Author": "ana"})       # no X-Requested-With
+    assert r.status_code in (400, 403)

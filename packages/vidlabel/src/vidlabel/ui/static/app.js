@@ -89,6 +89,14 @@ async function refreshDraft() {
 async function refreshInfo() {
   if (!S.session.has_dataset) return;
   S.info = await GET("/api/dataset");
+  paintNav();
+}
+let _navPage = "overview";
+function paintNav(page) {
+  if (page) _navPage = page;
+  const waiting = (S.info && S.info.proposals) || 0;
+  $("#nav").replaceChildren(...NAV.map(([k, t]) => h("a", { href: "#/" + k, class: (_navPage === k || (k === "browse" && _navPage === "video")) ? "on" : "" },
+    t, k === "proposals" && waiting ? [" ", h("span", { class: "badge", title: waiting + " rows proposed by agents are waiting for you" }, waiting)] : null)));
 }
 
 /* ---------- draft actions used by every page ---------- */
@@ -221,7 +229,7 @@ function pickFolder(start, then, files) {
 }
 
 /* ---------- router ---------- */
-const NAV = [["overview", "Overview"], ["browse", "Videos"], ["labels", "Labels"], ["views", "Views"], ["review", "Review"], ["validation", "Validation"], ["releases", "Releases"], ["history", "History"]];
+const NAV = [["overview", "Overview"], ["browse", "Videos"], ["labels", "Labels"], ["views", "Views"], ["review", "Review"], ["proposals", "Proposals"], ["validation", "Validation"], ["releases", "Releases"], ["history", "History"]];
 function parseHash() {
   const [path, query] = (location.hash.slice(2) || "overview").split("?");
   return { parts: path.split("/").map(decodeURIComponent), q: Object.fromEntries(new URLSearchParams(query || "")) };
@@ -237,10 +245,10 @@ async function render() {
   const main = { set className(v) { if (mine === renderToken) root.className = v; }, replaceChildren(...k) { if (mine === renderToken) root.replaceChildren(...k); } };
   stopViewer();
   root.className = "";
-  $("#nav").replaceChildren(...NAV.map(([k, t]) => h("a", { href: "#/" + k, class: (parts[0] === k || (k === "browse" && parts[0] === "video")) ? "on" : "" }, t)));
+  paintNav(parts[0]);
   if (!S.session.has_dataset) return pageSetup(main);
   try {
-    const pages = { overview: pageOverview, browse: pageBrowse, video: pageViewer, labels: pageLabels, views: pageViews, review: pageReview, validation: pageValidation, releases: pageReleases, history: pageHistory };
+    const pages = { overview: pageOverview, browse: pageBrowse, video: pageViewer, labels: pageLabels, views: pageViews, review: pageReview, proposals: pageProposals, validation: pageValidation, releases: pageReleases, history: pageHistory };
     await (pages[parts[0]] || pageOverview)(main, parts, q, () => mine === renderToken);
   } catch (e) { main.replaceChildren(h("div", { class: "page" }, h("div", { class: "notice bad" }, e.message))); }
 }
@@ -589,6 +597,36 @@ function sampleCard(releases) {
       out.replaceChildren(h("div", { class: "muted" }, `image size ${r.image_size.join("×")} · classes: ${r.class_names.join(", ")} · ${r.in_samples ? "this frame is in the training set" : "this frame is not in the training set (no annotations on it)"}`),
         h("table", {}, h("tbody", {}, Object.entries(r.targets).map(([k, t]) => h("tr", {}, h("td", { class: "mono" }, k), h("td", { class: "mono" }, "shape " + JSON.stringify(t.shape)), h("td", { class: "mono" }, t.values ? JSON.stringify(t.values) : "(large)"))))));
     } }, "Inspect")), out);
+}
+
+/* ---------- proposals from agents ---------- */
+async function pageProposals(main, parts, q, alive) {
+  const { proposals } = await GET("/api/proposals");
+  await refreshInfo();
+  if (!alive()) return;
+  const take = async (p, video) => {
+    const what = video ? `the ${p.by_video[video]} rows for ${video}` : `all ${p.adds} rows`;
+    if (!(await confirmBox(`Take in ${what} from ${p.author}?`, "They are copied into your draft and checked again, all or nothing. You can review them there (shown as pending), undo them, and nothing reaches the dataset until you commit."))) return;
+    const r = await attempt(() => POST("/api/proposals/adopt", { author: p.author, video_id: video || null }), "Taken into your draft");
+    if (r) { await refreshDraft(); render(); }
+  };
+  const drop = async (p, video) => {
+    if (!(await confirmBox(`Throw away ${video ? "the rows for " + video : "everything"} from ${p.author}?`, "Only the proposals are removed. The dataset is not changed."))) return;
+    if (await attempt(() => POST("/api/proposals/discard", { author: p.author, video_id: video || null }), "Discarded")) render();
+  };
+  main.replaceChildren(h("div", { class: "page" }, h("h1", {}, "Proposals"),
+    h("p", { class: "muted" }, "Rows that AI agents have proposed through `vidlabel mcp`. They are not in the dataset. Taking them in copies them into your draft as pending rows, marked as model-made and unreviewed; you review them in the viewer or the Review page, then commit."),
+    proposals.length ? proposals.map(p => h("div", { class: "card" },
+      h("div", { class: "row" }, h("h2", { style: "margin:0" }, p.author), h("span", { class: "muted" }, `${fmt(p.adds)} proposed rows`), h("span", { class: "spacer" }),
+        h("button", { class: "primary", onclick: () => take(p) }, "Take all into my draft"), h("button", { onclick: () => drop(p) }, "Throw away")),
+      h("div", { class: "row tight", style: "margin:8px 0" }, Object.entries(p.by_video).map(([v, n]) => h("span", { class: "row tight" },
+        h("a", { href: "#/video/" + encodeURIComponent(v) }, v), h("span", { class: "muted" }, fmt(n)), h("button", { class: "small", onclick: () => take(p, v) }, "Take"), h("button", { class: "small", onclick: () => drop(p, v) }, "Throw away")))),
+      p.other_edits ? h("p", { class: "muted" }, `${p.other_edits} other edit(s) in this draft cannot be taken over.`) : null,
+      h("table", {}, h("thead", {}, h("tr", {}, ["Video", "Kind", "Label", "Frames", "Track", "Confidence", "Note"].map(t => h("th", {}, t)))),
+        h("tbody", {}, p.rows.map(r => h("tr", {}, h("td", {}, r.video_id), h("td", {}, tag(r.kind, "tag")), h("td", {}, dot(r.label), " ", r.label),
+          h("td", { class: "mono" }, r.kind === "marker" ? `${r.start_frame}–${r.end_frame}` : r.start_frame), h("td", {}, r.track_id ?? ""), h("td", {}, r.confidence != null ? pct(r.confidence) : ""), h("td", { class: "muted" }, r.note || ""))))),
+      p.adds > p.rows.length ? h("p", { class: "muted" }, `Showing the first ${p.rows.length} of ${fmt(p.adds)}.`) : null))
+    : h("div", { class: "card empty" }, "Nothing is waiting. Start the agent server with ", h("code", {}, "vidlabel mcp PATH --name my-agent"), " and connect your agent to it; what it proposes appears here.")));
 }
 
 /* ---------- history ---------- */

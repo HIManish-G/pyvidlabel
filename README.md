@@ -48,10 +48,11 @@ Optional extras: `pip install -e "packages/vidlabel[video]"` (OpenCV: previews, 
 - **Masks** stored losslessly (crop, bit-pack, zstd): smaller and about 6 times faster to decode than COCO RLE in our measurements.
 - **Releases.** `vidlabel build` makes a sorted table whose id is a hash of its contents, with a label snapshot, so a run can be reproduced exactly.
 - **Check against the real video.** `vidlabel check-video` and `vidlabel preview` (OpenCV) draw annotations on actual frames.
+- **For AI agents.** `vidlabel mcp` lets an agent read a dataset and propose boxes, spans and masks over MCP; they wait as unreviewed proposals until a person takes them in and commits. Every read command also prints JSON (`--json`). See [AI agents](docs/agents.md).
 - **Web interface.** `pip install "vidlabel[ui]"` then `vidlabel ui my_dataset`: browse, review tracks, validate, build releases, draw boxes, spans and masks, add videos, manage labels and views, and revert changes without the command line.
 - **Training.** A framework-free sample builder and PyTorch datasets (streaming and map-style), including crops and box formats.
 - **Fast, exact frame access.** A per-video frame index makes seeking safe (even in variable-frame-rate video) and plans reads by keyframe; an optional frame cache turns random access into a file read.
-- **Built for Linux, Windows and macOS.** The test suite runs on Linux (with and without DataLoader workers); the CI workflow for Windows and macOS is written but has not been run yet.
+- **Built for Linux, Windows and macOS.** The test suite runs in CI on Linux, Windows and macOS (with and without DataLoader workers); it has not been tried by hand on Windows or macOS beyond that.
 
 ## Documentation
 

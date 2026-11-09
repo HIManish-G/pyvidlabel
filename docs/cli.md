@@ -21,12 +21,16 @@ vidlabel init path
 Show what is in a dataset.
 
 ```
-vidlabel info path
+vidlabel info path [options]
 ```
 
 | argument | |
 |---|---|
 | `path` | required |
+
+| option | default | what it does |
+|---|---|---|
+| `--json` | off | Print one JSON document instead of text (for programs and agents). |
 
 ## `validate`
 
@@ -43,6 +47,7 @@ vidlabel validate path [options]
 | option | default | what it does |
 |---|---|---|
 | `--deep` / `--no-deep` | off | Also decode every mask and cross-check its box. |
+| `--json` | off | Print one JSON document instead of text (for programs and agents). |
 
 ## `build`
 
@@ -59,6 +64,7 @@ vidlabel build path [options]
 | option | default | what it does |
 |---|---|---|
 | `--include-rejected` / `--no-include-rejected` | off | Also put rejected annotations in the release. |
+| `--json` | off | Print one JSON document instead of text (for programs and agents). |
 
 ## `add-video`
 
@@ -134,6 +140,7 @@ vidlabel tracks path video_id [options]
 | option | default | what it does |
 |---|---|---|
 | `--view` | none | Tracks made in this view (default: whole-frame rows). |
+| `--json` | off | Print one JSON document instead of text (for programs and agents). |
 
 ## `review`
 
@@ -259,6 +266,47 @@ vidlabel cache path out [options]
 | `--quality` | `95` | JPEG quality, 1-100. |
 | `--root` | none | Folder(s) to search for the videos by file name. |
 | `--overwrite` / `--no-overwrite` | off | Re-decode frames that are already cached. |
+
+## `query`
+
+Print the annotations of one video as JSON (ids are strings; mask pixels are left out). For scripts and agents.
+
+```
+vidlabel query path video_id [options]
+```
+
+| argument | |
+|---|---|
+| `path` | required |
+| `video_id` | required |
+
+| option | default | what it does |
+|---|---|---|
+| `--kind` | none | box, mask or marker. |
+| `--label` | none | Only this label. |
+| `--status` | none | unreviewed, approved or rejected. |
+| `--origin` | none | human, model, imported, ... |
+| `--track` | none | Only this track id. |
+| `--frames` | none | A frame range such as 100-200. |
+| `--view` | none | Rows made in this view (default: whole-frame rows). |
+| `--limit` | `100` | At most this many rows. |
+| `--offset` | `0` | Skip this many rows first. |
+
+## `mcp`
+
+Serve the dataset to an AI agent over MCP (standard input and output). The agent can read and propose, never commit.
+
+```
+vidlabel mcp path [options]
+```
+
+| argument | |
+|---|---|
+| `path` | required |
+
+| option | default | what it does |
+|---|---|---|
+| `--name` | `agent` | Who the agent is; its proposals are made by 'agent:NAME'. |
 
 ## `ui`
 

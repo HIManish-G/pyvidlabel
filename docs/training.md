@@ -318,6 +318,6 @@ to read it cheaply. To narrow the fixed list instead, use `videos=`, `labels=`, 
 
 ## Running on Windows, macOS and Linux
 
-The loader is plain Python, NumPy and OpenCV and is written to work on all three and is tested on Linux (the Windows and macOS CI jobs have not been run yet), including DataLoader workers started with
+The loader is plain Python, NumPy and OpenCV and is written to work on all three and is tested in CI on Linux, Windows and macOS, including DataLoader workers started with
 `fork` (the Linux default) and `spawn` (the default on Windows and macOS). With `num_workers > 0`, keep your training code
 under `if __name__ == "__main__":` on Windows and macOS: that is a PyTorch requirement, not a vidlabel one.

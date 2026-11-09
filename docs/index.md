@@ -5,7 +5,7 @@ boxes, masks, tracks and labels, all in one annotation table. It is meant to be 
 labelling tools and your training code.
 
 > **Status:** version 0.6.0, pre-release. "vidlabel" is a working name. It is installed from a source checkout for now
-> (nothing is published to PyPI yet). The test suite passes on Linux; Windows and macOS are not yet verified; see
+> (nothing is published to PyPI yet). The test suite passes in CI on Linux, Windows and macOS; see
 > [what is and is not verified](#what-is-and-is-not-verified).
 
 ## The idea in one minute
@@ -64,6 +64,7 @@ print(release.release_id, release.n_rows)
 | handle several crops of one video (main area plus a ticker, say) | [Views](views.md) |
 | store and use masks | [Masks](masks.md) |
 | browse, review and release from a web page instead of the command line | [Web interface](ui.md) |
+| let an AI agent read a dataset and propose labels for a person to review | [AI agents](agents.md) |
 | feed a PyTorch (or any) training loop | [Training](training.md) |
 | import annotations from another tool, or export to another format | [Writing a converter](converters.md) |
 | look up a command or a function | [Command line](cli.md), [Python API](python-api.md) |
@@ -81,7 +82,7 @@ print(release.release_id, release.n_rows)
 
 ## What is and is not verified
 
-Tested on Linux (and written to run in CI on Windows and macOS, which has not happened yet): the spec and validator, reading and writing, views, masks, releases, the
+Tested in CI on Linux, Windows and macOS: the spec and validator, reading and writing, views, masks, releases, the
 command line, frame reading and previews on real encoded H.264 video, and the PyTorch loader including DataLoader
 workers started with both `fork` and `spawn`.
 

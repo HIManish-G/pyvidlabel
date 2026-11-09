@@ -63,3 +63,11 @@ contact in the repository's security policy once one is added.
 
 What it does not do: encrypt traffic (it is plain HTTP, so do not expose it to the internet; use an SSH tunnel or a VPN), tell people apart
 (the name is not a login), or stop someone who has the token from editing. Treat the printed address like a password.
+
+## AI agents
+
+`vidlabel mcp` gives an agent no way to change the dataset. Its tools read, and propose rows into the agent's own draft: always `model`,
+`unreviewed`, author `agent:<name>`, size-capped, checked like any other edit, and all or nothing. The agent cannot approve, reject, delete,
+set `origin` or `author`, or commit; a person takes proposals in under *Proposals* and commits. The server runs over standard input and
+output, opens no port, and reads only the dataset it was started on and the video files that dataset names. Treat what an agent proposes as
+unreviewed model output, and its notes and labels as untrusted text.
