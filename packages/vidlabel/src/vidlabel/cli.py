@@ -439,6 +439,10 @@ def query(path: Path, video_id: str,
           limit: int = typer.Option(100, help="At most this many rows."), offset: int = typer.Option(0, help="Skip this many rows first.")):
     """Print the annotations of one video as JSON (ids are strings; mask pixels are left out). For scripts and agents."""
     ds = Dataset.open(path)
+    ids = ds.video_ids()
+    if video_id not in ids:
+        hint = " The second argument is a video id, not a file path." if any(c in video_id for c in "/\\") or "." in video_id else ""
+        raise ValueError(f"no video '{video_id}' in this dataset.{hint} Video ids: {ids[:20]}")
     ds.video(video_id)
     if label is not None and label not in {l.name for l in ds.vocab.labels}:
         raise ValueError(f"no label '{label}'. Labels: {[l.name for l in ds.vocab.labels]}")

@@ -90,7 +90,7 @@ vidlabel info DATASET --json
 vidlabel validate DATASET --json          # exit code 1 when there are errors, as without --json
 vidlabel tracks DATASET VIDEO --json
 vidlabel build DATASET --json
-vidlabel query DATASET VIDEO --kind box --label car --frames 100-200 --limit 50     # always JSON
+vidlabel query DATASET VIDEO --kind box --label car --frames 100-200 --limit 50     # always JSON; VIDEO is the video id (see `vidlabel info`), not a file path
 ```
 
 With `--json` (and always for `query`), an error is also JSON, `{"ok": false, "error": "..."}`, with exit code 1. Annotation ids are strings (they can exceed what

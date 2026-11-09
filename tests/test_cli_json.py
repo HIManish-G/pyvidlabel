@@ -98,3 +98,12 @@ def test_query_shows_masks_without_their_pixels(tmp_path):
     d = _json(run(app, ["query", str(ds.path), "v"]))
     row = d["rows"][0]
     assert row["has_mask"] is True and "mask" not in row and "mask_codec" not in row and len(json.dumps(d)) < 2000
+
+
+def test_query_says_which_video_ids_exist_when_given_a_file_path(path):
+    for given in ("C:\\Users\\me\\Downloads\\clip.mp4", "videos/clip.mp4", "clip.mp4"):
+        r = run(app, ["query", path, given])
+        err = _json(r)["error"]
+        assert r.exit_code == 1 and "not a file path" in err and "['v']" in err
+    err = _json(run(app, ["query", path, "nope"]))["error"]
+    assert "Video ids: ['v']" in err and "file path" not in err
