@@ -481,7 +481,7 @@ def ui(path: Path = typer.Argument(Path("."), help="The dataset folder (a folder
        no_browser: bool = typer.Option(False, "--no-browser", help="Do not open a browser window."),
        fs_root: Optional[list[Path]] = typer.Option(None, "--fs-root", help="Only allow the file picker inside this folder (repeat for more). Required for file access when sharing."),
        token: Optional[str] = typer.Option(None, help="Use this access token instead of a random one (so a shared address stays the same).")):
-    """Open the local web interface. Needs `pip install "vidlabel[ui]"`."""
+    """Open the local web interface. Needs the "ui" extra of the vidlabel package (see the installation guide)."""
     try:
         import uvicorn
         from .ui.app import create_app

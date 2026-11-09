@@ -310,7 +310,7 @@ vidlabel mcp path [options]
 
 ## `ui`
 
-Open the local web interface. Needs `pip install "vidlabel[ui]"`.
+Open the local web interface. Needs the "ui" extra of the vidlabel package (see the installation guide).
 
 ```
 vidlabel ui path [options]

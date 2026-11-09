@@ -9,7 +9,7 @@ There are two version numbers, always released together while the project is you
 | **spec version** | `SPEC_VERSION` in `vidlabel-spec`, `manifest.json` of every dataset | the format of the files |
 | **library version** | `vidlabel.__version__` | the code that reads and writes them |
 
-Both are currently **0.6.0**, and the packages pin each other exactly (`vidlabel` requires `vidlabel-spec==0.6.0`).
+The format (spec) is currently at **0.6.0**. The two packages are at **0.6.1** and pin each other exactly (`vidlabel` requires `vidlabel-spec==0.6.1`); the package patch version can move without the format changing.
 
 ## What a version promises
 

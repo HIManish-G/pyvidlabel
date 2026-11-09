@@ -8,6 +8,6 @@ from .dataset import Dataset
 from .samples import FrameSamples
 from .validate import Issue, ValidationError, validate_dataset
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 __all__ = ["Dataset", "FrameSamples", "Compiled", "build", "masks", "Issue", "ValidationError", "validate_dataset", "SPEC_VERSION",
            "FrameIndex", "Label", "Manifest", "Rational", "Region", "Release", "VideoMetadata", "VideoSource", "View", "Vocab"]

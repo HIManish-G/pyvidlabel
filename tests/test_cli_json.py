@@ -107,3 +107,12 @@ def test_query_says_which_video_ids_exist_when_given_a_file_path(path):
         assert r.exit_code == 1 and "not a file path" in err and "['v']" in err
     err = _json(run(app, ["query", path, "nope"]))["error"]
     assert "Video ids: ['v']" in err and "file path" not in err
+
+
+def test_help_text_has_no_square_brackets_that_the_help_renderer_would_swallow():
+    """The help renderer treats [word] as markup and drops it, so a command's help must not rely on brackets such as an extra's name."""
+    import re
+    import typer.main
+    for cmd in typer.main.get_command(app).commands.values():
+        text = (cmd.help or "") + " ".join(getattr(p, "help", None) or "" for p in cmd.params)
+        assert not re.search(r"\[[A-Za-z][\w-]*\]", text), (cmd.name, text)
