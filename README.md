@@ -22,8 +22,8 @@ my_dataset/
 ## Quick start
 
 ```bash
-pip install -e packages/vidlabel-spec -e packages/vidlabel
-python examples/make_sample.py /tmp/sample
+pip install vidlabel                      # the format and the library (installs vidlabel-spec too)
+python examples/make_sample.py /tmp/sample      # from a checkout of this repository
 vidlabel info /tmp/sample ; vidlabel validate /tmp/sample --deep ; vidlabel build /tmp/sample
 ```
 
@@ -36,8 +36,8 @@ ds.annotations("clip1", kind="box", frames=(0, 100))          # a pyarrow Table
 release, path = ds.build()                                    # pin release.release_id in your training config
 ```
 
-Optional extras: `pip install -e "packages/vidlabel[video]"` (OpenCV: previews, frame reading) and
-`pip install -e "packages/vidlabel[torch]"` (adds PyTorch for the training loader). Registering a video file also needs
+Optional extras: `pip install "vidlabel[video]"` (OpenCV: previews, frame reading), `"vidlabel[ui]"` (web interface),
+`"vidlabel[mcp]"` (agent server) and `"vidlabel[torch]"` (adds PyTorch for the training loader). Registering a video file also needs
 `ffprobe` (part of ffmpeg).
 
 ## What it does
@@ -73,7 +73,7 @@ Start at **[docs/index.md](docs/index.md)**.
 
 ## Status
 
-Version 0.6.0, pre-release; nothing is on PyPI yet. Tested: spec and validator, reading and
+Version 0.6.0, alpha release on PyPI; the format and API can still change between minor versions. Tested: spec and validator, reading and
 writing, views, masks, releases, the command line, frame reading and previews on real H.264 video, and the PyTorch loader.
 **Not yet verified:** Parquet against other storage at scale, several people editing one video at once, the loader on very
 large datasets or many GPUs, variable-frame-rate video in real datasets. There are **no importers or exporters** for other

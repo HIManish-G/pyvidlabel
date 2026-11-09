@@ -5,12 +5,12 @@ runnable is executed by the test suite, so what you read here works.
 
 ## Install
 
-vidlabel needs Python 3.10 or newer. From a checkout of the repository:
+vidlabel needs Python 3.10 or newer.
 
 ```bash
-pip install -e packages/vidlabel-spec -e packages/vidlabel         # the format and the library
-pip install -e "packages/vidlabel[video]"                          # + OpenCV: read frames, previews, check-video
-pip install -e "packages/vidlabel[torch]"                          # + OpenCV and PyTorch: the training loader
+pip install vidlabel                  # the format and the library
+pip install "vidlabel[video]"         # + OpenCV: read frames, previews, check-video
+pip install "vidlabel[torch]"         # + OpenCV and PyTorch: the training loader
 ```
 
 `vidlabel[torch]` installs whatever PyTorch pip picks by default; for a GPU build follow

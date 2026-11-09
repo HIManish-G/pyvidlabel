@@ -4,7 +4,7 @@ An open, directory-based format and Python library for **video annotation data**
 tracks and labels in one annotation table, with views for crops, releases you can pin, and loaders for training. It sits between your
 labelling tools and your training code.
 
-> **Status:** version 0.6.0, pre-release; nothing is published to PyPI yet. The test suite passes in CI on
+> **Status:** version 0.6.0, alpha, published on PyPI (`pip install vidlabel`). The test suite passes in CI on
 > Linux, Windows and macOS ([limitations](limitations.md)).
 
 ## The idea in one minute

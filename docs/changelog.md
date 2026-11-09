@@ -1,7 +1,7 @@
 # Changelog
 
 The spec version and the library version move together. "Spec" entries change the files; "Library" entries change behaviour only.
-Nothing has been published to PyPI yet, so versions below are internal milestones.
+0.6.0 is the first release published to PyPI (alpha). Earlier versions were internal milestones.
 
 ## 0.6.0 (2026-11)
 

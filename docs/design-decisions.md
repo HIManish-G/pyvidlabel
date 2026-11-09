@@ -179,6 +179,6 @@ half-written file. A real multi-writer story (locks, or merging) is not designed
   containers are unmeasured (a mismatch falls back to sequential decoding with a warning, never to a wrong frame).
 - **Frame cache at scale.** Measured on a few hundred frames of one clip. Build time, disk use and read speed on millions of frames or network storage are unknown.
 - **Temporal mask coding and the arithmetic codec.** Deferred; see the caveats above.
-- **Publishing.** Nothing is on PyPI yet; the package is installed from a source checkout.
+- **Release status.** The packages are published on PyPI as an alpha; the format and API can change between minor versions.
 - **Spec strictness over time.** The track rules added in 0.5.0 make `validate` stricter than 0.4 (a duplicate track in
   a frame is an error). Datasets written before 0.5.0 that contain such duplicates must be corrected.

@@ -3,8 +3,7 @@
 ## Installing
 
 **`pip install "vidlabel[video]"` says the package "does not provide the extra 'video'".**
-That happens with an older or stale editable install. From the repository root run
-`pip install -e "packages/vidlabel[video]"`, or just `pip install opencv-python-headless`.
+That happens with an older or stale install. Run `pip install --upgrade vidlabel`, or just `pip install opencv-python-headless`.
 
 **`ffprobe not found` when running `add-video`.**
 `add-video` needs ffprobe, which comes with ffmpeg: `brew install ffmpeg` (macOS), `sudo apt install ffmpeg` (Debian/Ubuntu),
@@ -133,4 +132,4 @@ reads the live annotations and can change.
 
 **Does it store my videos?** No. It records where they are and a hash to recognise them.
 
-**Is it on PyPI?** Not yet. Install from a source checkout ([getting started](getting-started.md#install)).
+**Is it on PyPI?** Yes: `pip install vidlabel` ([getting started](getting-started.md#install)). It is an alpha release.

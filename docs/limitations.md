@@ -41,12 +41,12 @@ An honest list of what vidlabel does not do, what has not been verified, and wha
 | many-GPU training, very large datasets | untested |
 | the effect of `ReadPlan` on training quality beyond one small test | see [performance](performance.md#does-a-readplan-hurt-training) |
 | satellite data | tested with derived (not human) labels on real imagery; no labelled satellite video was available |
-| PyPI release | not done |
+| stable (non-alpha) release | not done; the current release is an alpha |
 
 ## Roadmap (not promises)
 
 1. Testing the local web interface with assistive technology and on touch and pen screens; a keyboard way to draw masks ([design](ui-design.md)).
-2. Publish to PyPI; add changelog automation and a signed release process.
+2. Add changelog automation and a signed release process.
 3. Decide on image collections (many images in one table) if people ask for them: single images already work as one-frame videos.
 4. More annotation kinds (keypoints, polygons) if a clear need appears; each needs a spec change and validator rules.
 

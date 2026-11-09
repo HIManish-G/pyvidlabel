@@ -1,6 +1,6 @@
 # Installation
 
-vidlabel is two Python packages. They are installed from a source checkout for now; nothing is published to PyPI yet.
+vidlabel is two Python packages. Both are published on PyPI; installing `vidlabel` also installs `vidlabel-spec`. The current release is an alpha.
 
 | package | what it is | needs |
 |---|---|---|
@@ -13,10 +13,13 @@ Python 3.10 or newer. The test suite is run in CI on Python 3.10 to 3.13 on Linu
 ## Choose what you need
 
 ```bash
-git clone <your repository URL> && cd vidlabel
-pip install -e packages/vidlabel-spec -e packages/vidlabel         # format + library + command line
-pip install -e "packages/vidlabel[video]"                          # + OpenCV: read frames, previews, check-video, frame cache
-pip install -e "packages/vidlabel[torch]"                          # + OpenCV and PyTorch: the training loaders
+pip install vidlabel                  # format + library + command line
+pip install "vidlabel[video]"         # + OpenCV: read frames, previews, check-video, frame cache
+pip install "vidlabel[ui]"            # + the web interface
+pip install "vidlabel[mcp]"           # + the MCP server for AI agents
+pip install "vidlabel[torch]"         # + OpenCV and PyTorch: the training loaders
+
+To work on vidlabel itself, install from a checkout instead: `pip install -e packages/vidlabel-spec -e packages/vidlabel` ([development](development.md)).
 ```
 
 | you want to | install |
@@ -55,6 +58,5 @@ For a development install with the test suite, see [development](development.md)
 
 ## Uninstall and upgrade
 
-Datasets are plain folders and are not touched by installing or removing the packages. To upgrade, update the checkout and re-run the
-`pip install -e` lines. A newer library opens older datasets of the same spec major version; see
+Datasets are plain folders and are not touched by installing or removing the packages. To upgrade, run `pip install --upgrade vidlabel`. A newer library opens older datasets of the same spec major version; see
 [compatibility](compatibility.md#upgrading) for what changes between versions.

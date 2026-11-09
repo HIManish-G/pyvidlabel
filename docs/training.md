@@ -5,7 +5,7 @@ apply to it. It has two layers:
 
 - `vidlabel.FrameSamples` works with plain NumPy and needs no deep-learning framework. It decides *which* frames
   to use, from the annotation table alone, and builds the targets for each.
-- `vidlabel.torch_data` wraps it as PyTorch datasets (`VideoStream`, `VideoFrames`). Install with `pip install -e "packages/vidlabel[torch]"`.
+- `vidlabel.torch_data` wraps it as PyTorch datasets (`VideoStream`, `VideoFrames`). Install with `pip install "vidlabel[torch]"`.
 
 Reading pixels needs OpenCV (`vidlabel[video]`, included in `[torch]`) and the video files at the paths the dataset
 records (or under `roots=[...]`).

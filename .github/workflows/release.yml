@@ -1,0 +1,31 @@
+name: release
+# Publishes both packages to PyPI when a tag such as v0.6.0 is pushed.
+# Uses PyPI trusted publishing (no API token): configure a publisher for each project on pypi.org
+# (owner HIManish-G, repository pyvidlabel, workflow release.yml, environment pypi).
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install build twine
+      - run: |
+          python -m build -o dist packages/vidlabel-spec
+          python -m build -o dist packages/vidlabel
+      - run: twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with: { name: dist, path: dist/ }
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: dist, path: dist/ }
+      - uses: pypa/gh-action-pypi-publish@release/v1

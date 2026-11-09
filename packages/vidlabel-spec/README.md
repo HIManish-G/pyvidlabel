@@ -1,9 +1,12 @@
 # vidlabel-spec
 
-The specification of the `vidlabel` video annotation format, written as
-[pydantic](https://docs.pydantic.dev) models and exportable as JSON Schema so other languages can implement it.
-It has almost no dependencies. Install it on its own just to validate metadata; install `vidlabel` to read and write datasets.
+The specification of the [vidlabel](https://github.com/HIManish-G/pyvidlabel) video annotation format: Pydantic models and the JSON Schema for the files in a
+dataset. Most people want the `vidlabel` package, which depends on this one.
 
-```python
-from vidlabel_spec import VideoMetadata, Manifest, ANNOTATION_COLUMNS, json_schema
+**Status: alpha (0.6.0).** Versioned together with `vidlabel`; see the [changelog](https://github.com/HIManish-G/pyvidlabel/blob/main/docs/changelog.md).
+
 ```
+pip install vidlabel-spec
+```
+
+MIT licensed.

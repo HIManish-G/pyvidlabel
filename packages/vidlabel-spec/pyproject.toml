@@ -9,7 +9,27 @@ description = "Specification (pydantic models + JSON Schema) for the vidlabel vi
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
+keywords = ["video", "annotation", "labelling", "bounding boxes", "masks", "dataset", "computer vision"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
 dependencies = ["pydantic>=2.5"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/vidlabel_spec"]
+
+[project.urls]
+Homepage = "https://github.com/HIManish-G/pyvidlabel"
+Documentation = "https://github.com/HIManish-G/pyvidlabel/wiki"
+Issues = "https://github.com/HIManish-G/pyvidlabel/issues"
+Changelog = "https://github.com/HIManish-G/pyvidlabel/blob/main/docs/changelog.md"
