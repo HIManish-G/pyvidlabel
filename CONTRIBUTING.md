@@ -2,7 +2,7 @@
 
 ## Setup and tests
 
-- `pip install -e packages/vidlabel-spec -e packages/vidlabel pytest`, then `pytest`.
+- `pip install -e packages/vidlabel-spec -e packages/vidlabel pytest`, then `pytest`. The accessibility test also runs `axe-core` when it is available: `npm install --no-save axe-core` at the repository root (CI does this on Linux).
 - Frame, preview, loader and seek tests need OpenCV and ffmpeg (`pip install -e "packages/vidlabel[video]"`); the loader tests
   also need PyTorch (`[torch]`). Each skips itself if something is missing. The CI workflow runs everything on Linux, Windows and macOS.
 

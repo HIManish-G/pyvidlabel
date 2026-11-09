@@ -114,7 +114,7 @@ function maskFor(v, r, frame) {
   let e = v.masks.get(key);
   if (e) return e.ready ? e : null;
   e = { ready: false }; v.masks.set(key, e);
-  fetch(`/api/mask-png/${encodeURIComponent(v.vid)}/${encodeURIComponent(r.annotation_id)}?` + new URLSearchParams({ frame, rev: r.mask_rev, view_id: v.view }))
+  fetch(`/api/mask-png/${encodeURIComponent(v.vid)}/${encodeURIComponent(r.annotation_id)}?` + new URLSearchParams({ frame, rev: r.mask_rev, view_id: v.view }), { headers: { "X-Vidlabel-Author": encodeURIComponent(S.author || "anonymous") } })
     .then(async res => {
       if (res.status === 204 || !res.ok) { e.empty = true; e.ready = true; return; }
       e.x = +res.headers.get("X-Mask-X"); e.y = +res.headers.get("X-Mask-Y"); e.bmp = await createImageBitmap(await res.blob()); e.tint = new Map(); e.ready = true;
@@ -185,6 +185,7 @@ function paintAll(what) {
   paintTransport();
   v.painted = { n: v.n, shown: v.shown, playhead: v.n, rows: (v.rows || []).length };
   v.el.root.dataset.frame = v.n; v.el.root.dataset.shown = v.shown;
+  const tl = v.el.tlc; if (tl) { tl.setAttribute("aria-valuenow", v.n); tl.setAttribute("aria-valuetext", `frame ${v.n} of ${v.frames - 1}, ${timecode(v.n, v.fps, true)}`); }
 }
 function paintTransport() {
   const v = V, e = v.el, last = v.frames - 1;
@@ -292,7 +293,7 @@ async function pageViewer(main, parts, q, alive) {
   if (!alive()) return;
   const m = meta.metadata, fps = m.fps.num / m.fps.den;
   const n0 = Math.max(0, Math.min(+q.f || 0, m.frame_count - 1));
-  V = { vid, n: n0, shown: null, shownBmp: null, frames: m.frame_count, view: q.view || "", playing: false, rate: 1, loop: false, dir: 1, rows: [], sel: null,
+  V = { vid, views, n: n0, shown: null, shownBmp: null, frames: m.frame_count, view: q.view || "", playing: false, rate: 1, loop: false, dir: 1, rows: [], sel: null,
         boxes_on: true, masks_on: true, maskAlpha: .45, size: [m.width, m.height], fps, found: meta.file_found, zoom: 1, pan: [0, 0], fit: null,
         fs: { map: new Map(), pending: new Map(), bad: new Set(), cid: Math.random().toString(36).slice(2), seq: 0 },
         ann: { chunks: new Map(), waiting: new Map(), gen: 0 }, masks: new Map(), tl: null };
@@ -300,7 +301,7 @@ async function pageViewer(main, parts, q, alive) {
   const layers = h("div", { class: "layers" }, canvas, ov);
   const hudState = h("span", { class: "hud-state" }), hudPos = h("span"), hudZoom = h("span");
   const stage = h("div", { class: "stage" }, layers, h("div", { class: "hud mono" }, hudState, hudPos, hudZoom));
-  const tlc = h("canvas", { class: "tlc", height: 120, tabindex: 0, "aria-label": "Timeline. Drag to move through the video, scroll to zoom." });
+  const tlc = h("canvas", { class: "tlc", height: 120, tabindex: 0, role: "slider", "aria-orientation": "horizontal", "aria-valuemin": 0, "aria-valuemax": m.frame_count - 1, "aria-valuenow": n0, "aria-label": "Timeline: the current frame. Arrow keys step one frame, Shift 10; scroll to zoom." });
   const side = h("div", { class: "side" });
   const frameIn = h("input", { type: "number", min: 0, max: m.frame_count - 1, class: "framein", "aria-label": "Current frame", value: n0,
     onchange: e => { goto(+e.target.value); e.target.blur(); } });
@@ -315,12 +316,12 @@ async function pageViewer(main, parts, q, alive) {
   drawInit(); tlInit(V);
   const rate = h("select", { "aria-label": "Playback speed", onchange: e => { V.rate = +e.target.value; V.clock = null; } },
     [.25, .5, 1, 2].map(r => h("option", { value: r, selected: r === 1 }, r + "×")));
-  const viewSel = h("select", { onchange: e => { V.view = e.target.value; V.masks.clear(); V.ann.gen++; V.ann.chunks.clear(); V.ann.waiting.clear(); for (const b of V.fs.map.values()) b.close(); V.fs.map.clear(); V.fs.bad.clear(); V.shownBmp = null; V.shown = null;
-      if (V.view) { V.work = null; V.tool = "select"; } paintToolbar(); loadTimeline(); goto(V.n, { force: true }); } },
+  const viewSel = h("select", { "aria-label": "View", onchange: e => { V.view = e.target.value; V.masks.clear(); V.ann.gen++; V.ann.chunks.clear(); V.ann.waiting.clear(); for (const b of V.fs.map.values()) b.close(); V.fs.map.clear(); V.fs.bad.clear(); V.shownBmp = null; V.shown = null;
+      V.work = null; V.poly = []; paintToolbar(); loadTimeline(); goto(V.n, { force: true }); } },
     h("option", { value: "" }, "Whole frame"), views.map(v => h("option", { value: v.view_id, selected: v.view_id === V.view }, "View: " + v.view_id)));
   const tools = toolbarEl();
   const root = h("div", { class: "viewer" },
-    h("div", { class: "bar-top row" }, h("b", {}, vid), h("span", { class: "muted" }, `${m.width}×${m.height} · ${fmt(m.frame_count)} frames · ${fps.toFixed(2)} fps`), viewSel,
+    h("div", { class: "bar-top row" }, h("h1", { class: "sr" }, "Viewer: " + vid), h("b", {}, vid), h("span", { class: "muted" }, `${m.width}×${m.height} · ${fmt(m.frame_count)} frames · ${fps.toFixed(2)} fps`), viewSel,
       h("label", { class: "row tight" }, h("input", { type: "checkbox", checked: true, onchange: e => { V.boxes_on = e.target.checked; draw(); } }), "boxes"),
       h("label", { class: "row tight" }, h("input", { type: "checkbox", checked: true, onchange: e => { V.masks_on = e.target.checked; draw(); } }), "masks"),
       h("span", { class: "spacer" }), h("a", { href: "#/review/" + encodeURIComponent(vid) }, "Review tracks →"),
@@ -330,7 +331,7 @@ async function pageViewer(main, parts, q, alive) {
       h("div", { class: "row tight controls" }, els.first, els.prev, els.playBtn, els.next, els.endBtn, h("span", { class: "sep" }), frameIn, els.of,
         rate, h("button", { class: "small", "aria-pressed": false, title: "Start again from the first frame when the end is reached", onclick: e => { V.loop = !V.loop; e.target.setAttribute("aria-pressed", V.loop); e.target.classList.toggle("on", V.loop); } }, "Loop"),
         h("span", { class: "spacer" }), els.fitBtn,
-        mkb("−", "Zoom the timeline out", () => zoomTimeline(1.6)), mkb("+", "Zoom the timeline in", () => zoomTimeline(1 / 1.6)), mkb("Fit", "Show the whole timeline", () => fitTimeline())),
+        mkb("−", "Zoom the timeline out", () => zoomTimeline(1.6)), mkb("+", "Zoom the timeline in", () => zoomTimeline(1 / 1.6)), mkb("Fit", "Fit: show the whole timeline", () => fitTimeline())),
       tlc));
   V.el.root = root;
   main.className = "full";
@@ -388,13 +389,13 @@ async function copyBoxForward() {
 }
 async function copyBoxOnce() {
   const v = V, r = v.rows.find(x => x.annotation_id === v.sel);
-  if (!canDraw() || v.shown !== v.n || !editableBox(r)) { toast("Select a box on this frame (whole frame view), then press C to copy it forward.", true); return; }
+  if (!canDraw() || v.shown !== v.n || !editableBox(r)) { toast("Select a box on this frame, then press C to copy it forward.", true); return; }
   if (v.n >= v.frames - 1) { toast("This is the last frame.", true); return; }
   await ensureAnn(v.n + 1);
   const there = rowsAt(v, v.n + 1);
   if (!there) { toast("The next frame's annotations have not loaded yet. Try again.", true); return; }
   if (r.track_id != null && there.some(x => x.kind === "box" && x.track_id === r.track_id && x.pending !== "deleted")) { toast(`Track ${r.track_id} already has a box on frame ${v.n + 1}. Step forward and adjust it instead.`, true); return; }
-  const row = { kind: "box", label: r.label, start_frame: v.n + 1, box: [r.x0, r.y0, r.x1, r.y1] };
+  const row = { kind: "box", label: r.label, start_frame: v.n + 1, box: [r.x0, r.y0, r.x1, r.y1], ...vtag() };
   if (r.track_id != null) row.track_id = r.track_id;
   const res = await draftOp("/api/draft/add", { video_id: v.vid, row });
   if (!res || V !== v) return;

@@ -12,14 +12,18 @@ function drawInit() {
   V.work = null; V.drag = null; V.poly = []; V.cursor = null; V.spanDrag = null; V.stroke = null;
   V.brush = Math.max(3, Math.round(Math.min(V.size[0], V.size[1]) / 40));
 }
-const canDraw = () => !V.view;
-const editableBox = r => r && r.kind === "box" && r.pending !== "deleted" && r.x0 != null;
+const canDraw = () => true;                           // in a view too: boxes and masks are drawn in the view's own pixels and converted by the server
+const curView = () => (V.views || []).find(v => v.view_id === V.view) || null;
+const viewScaled = () => { const w = curView(); return !!(w && w.region && w.output_size && (w.output_size[0] !== w.region.width || w.output_size[1] !== w.region.height)); };
+const vtag = () => (V.view ? { view_id: V.view } : {});          // rows drawn in a view belong to it
+const insideView = r => r.x0 >= -0.5 && r.y0 >= -0.5 && r.x1 <= V.size[0] + 0.5 && r.y1 <= V.size[1] + 0.5;
+const editableBox = r => r && r.kind === "box" && r.pending !== "deleted" && r.x0 != null && (!V.view || insideView(r));       // a box reaching out of the view is edited on the whole frame
 
 /* ---------- toolbar ---------- */
 function toolbarEl() { V.el.tools = h("div", { class: "tools row tight" }); paintToolbar(); return V.el.tools; }
 function paintToolbar() {
   if (!V || !V.el.tools) return;
-  const on = canDraw(), labels = S.info.labels, tracks = V.tl ? V.tl.tracks : [];
+  const on = canDraw(), allowed = (curView() || {}).allowed_labels, labels = S.info.labels.filter(l => !allowed || allowed.includes(l.name)), tracks = V.tl ? V.tl.tracks : [];
   if (!labels.some(l => l.name === V.label)) V.label = (labels[0] || {}).name || "";
   const labelSel = h("select", { "aria-label": "Label for new drawings", title: "Label for new drawings", onchange: e => { V.label = e.target.value; retint(); draw(); } },
     labels.map(l => h("option", { value: l.name, selected: l.name === V.label }, l.name)));
@@ -28,7 +32,7 @@ function paintToolbar() {
     tracks.map(t => h("option", { value: String(t.track_id), selected: V.track === String(t.track_id) }, `Track ${t.track_id} (${t.labels.join(", ")})`)));
   V.el.tools.replaceChildren(
     TOOLS.map(([k, name, key]) => h("button", { class: "small" + (V.tool === k ? " on" : ""), "aria-pressed": V.tool === k, disabled: !on && k !== "select", title: `${name} (${key})`, onclick: () => setTool(k) }, name)),
-    on ? (labels.length ? [labelSel, trackSel] : h("a", { href: "#/labels" }, "Add a label to start drawing")) : h("span", { class: "muted" }, "Choose “Whole frame” to draw. Rows drawn there reach a view with “Copy labels in”."));
+    on ? (labels.length ? [labelSel, trackSel, V.view ? h("span", { class: "muted", title: "Rows drawn here belong to this view. They are stored in the video's own pixels." }, `drawing in view ${V.view}`) : null] : h("a", { href: "#/labels" }, allowed ? "This view allows no label you have" : "Add a label to start drawing")) : null);
 }
 function setTool(k) {
   if (!canDraw() && k !== "select") return;
@@ -99,13 +103,13 @@ async function onUp(ev) {
   const [a, b, c, e] = d.rect, r = [Math.min(a, c), Math.min(b, e), Math.max(a, c), Math.max(b, e)].map(x => Math.round(x * 10) / 10);
   if (d.kind === "new") {
     if (r[2] - r[0] < 3 || r[3] - r[1] < 3) { drawOverlay(); return; }
-    const row = { kind: "box", label: V.label, start_frame: V.shown, box: r }, tv = trackValue();
+    const row = { kind: "box", label: V.label, start_frame: V.shown, box: r, ...vtag() }, tv = trackValue();
     if (tv != null) row.track_id = tv;
     const res = await draftOp("/api/draft/add", { video_id: V.vid, row });
     if (res) { V.sel = res.id; if (V.track === "new") V.track = String(tv); await afterEdit(); }
   } else {
     const moved = r.some((x, i) => Math.abs(x - d.orig[i]) > 0.5);
-    if (moved && r[2] - r[0] >= 2 && r[3] - r[1] >= 2) { if (await draftOp("/api/draft/update", { video_id: V.vid, ids: [d.row.annotation_id], values: { box: r } })) await afterEdit(); }
+    if (moved && r[2] - r[0] >= 2 && r[3] - r[1] >= 2) { if (await draftOp("/api/draft/update", { video_id: V.vid, ids: [d.row.annotation_id], values: { box: r }, ...vtag() })) await afterEdit(); }
   }
   drawOverlay();
 }
@@ -126,6 +130,7 @@ function selectDown(p) {
     .sort((a, b) => (a.x1 - a.x0) * (a.y1 - a.y0) - (b.x1 - b.x0) * (b.y1 - b.y0));
   V.sel = hits.length ? hits[0].annotation_id : null;
   const row = hits[0];
+  if (row && row.kind === "box" && V.view && !editableBox(row)) toast("This box reaches outside the view. Edit it on the whole frame.", true);
   if (editableBox(row)) V.drag = { kind: "move", row, start: p, orig: [row.x0, row.y0, row.x1, row.y1], rect: [row.x0, row.y0, row.x1, row.y1] };
   draw(); drawSide();
 }
@@ -194,9 +199,9 @@ async function saveMask() {
   const w = V.work, bits = packMask(w.cv);
   if (!bits) { toast("The mask is empty. Paint something first, or discard it.", true); return; }
   let res;
-  if (w.target) res = await draftOp("/api/draft/update", { video_id: V.vid, ids: [w.target], values: { mask_bits: bits } });
+  if (w.target) res = await draftOp("/api/draft/update", { video_id: V.vid, ids: [w.target], values: { mask_bits: bits }, frame: w.frame, ...vtag() });
   else {
-    const row = { kind: "mask", label: V.label, start_frame: w.frame, mask_bits: bits }, tv = trackValue();
+    const row = { kind: "mask", label: V.label, start_frame: w.frame, mask_bits: bits, ...vtag() }, tv = trackValue();
     if (tv != null) row.track_id = tv;
     res = await draftOp("/api/draft/add", { video_id: V.vid, row });
     if (res) { V.sel = res.id; if (V.track === "new") V.track = String(tv); }
@@ -204,7 +209,8 @@ async function saveMask() {
   if (res) { V.work = null; if (!MASK_TOOLS.includes(V.tool)) V.tool = "select"; await afterEdit(); }
 }
 async function editMask(row) {
-  const frame = V.shown, b = await attempt(() => GET(`/api/mask-bits/${encodeURIComponent(V.vid)}/${encodeURIComponent(row.annotation_id)}`, { frame }));
+  if (viewScaled()) { toast("This view is resized, so a mask cannot be edited in it without losing detail. Edit it on the whole frame.", true); return; }
+  const frame = V.shown, b = await attempt(() => GET(`/api/mask-bits/${encodeURIComponent(V.vid)}/${encodeURIComponent(row.annotation_id)}`, { frame, view_id: V.view }));
   if (!b) return;
   V.work = null; ensureWork(); V.work.frame = frame;
   const img = new ImageData(b.width, b.height), raw = atob(b.data);
@@ -223,7 +229,7 @@ function spanStart(e) {
     removeEventListener("pointermove", mv); removeEventListener("pointerup", up);
     const s = V.spanDrag; V.spanDrag = null; if (!s) return;
     const lo = Math.min(s.a, s.b), hi = Math.max(s.a, s.b);
-    if (await draftOp("/api/draft/add", { video_id: V.vid, row: { kind: "marker", label: V.label, start_frame: lo, end_frame: hi } })) { toast(lo === hi ? `Labelled frame ${lo}` : `Labelled frames ${lo} to ${hi}`); await afterEdit(); }
+    if (await draftOp("/api/draft/add", { video_id: V.vid, row: { kind: "marker", label: V.label, start_frame: lo, end_frame: hi, ...vtag() } })) { toast(lo === hi ? `Labelled frame ${lo}` : `Labelled frames ${lo} to ${hi}`); await afterEdit(); }
   };
   addEventListener("pointermove", mv); addEventListener("pointerup", up);
 }
@@ -265,8 +271,8 @@ function drawPanel() {
       h("div", { class: "row tight" }, h("button", { class: "primary small", onclick: saveMask }, w.target ? "Apply to the mask" : "Save mask"),
         h("button", { class: "small", disabled: !w.snaps.length, onclick: () => undoStroke() }, "Undo"), h("button", { class: "small", disabled: !w.redo.length, onclick: () => redoStroke() }, "Redo"),
         h("button", { class: "small", onclick: discardMask }, "Discard"))));
-  } else if (V.tool === "box") out.push(h("p", { class: "muted" }, "Drag on the frame to draw a box. It is recorded at this frame; step forward with →, and draw again to follow the same track."));
-  else if (V.tool === "span") out.push(h("p", { class: "muted" }, "Drag on the timeline to label a stretch of frames. A click labels one frame. With the Select tool you can drag a span's ends to resize it."));
+  } else if (V.tool === "box") out.push(h("p", { class: "muted" }, "Drag on the frame to draw a box. It is recorded at this frame; step forward with →, and draw again to follow the same track."), boxByNumbers());
+  else if (V.tool === "span") out.push(h("p", { class: "muted" }, "Drag on the timeline to label a stretch of frames. A click labels one frame. With the Select tool you can drag a span's ends to resize it."), spanByNumbers());
   else if (V.tool === "polygon") out.push(h("p", { class: "muted" }, "Click to place corners; click the first point, double-click or press Enter to close the shape. Drag a corner to move it. Backspace removes the last corner."));
   return out;
 }
@@ -283,12 +289,52 @@ function selectionPanel() {
     body.push(h("div", { class: "row", style: "margin-top:6px" }, "Track", tr));
   }
   if (r.kind === "marker") {
-    const a = h("input", { type: "number", min: 0, max: V.frames - 1, value: r.start_frame, style: "width:84px" }), b = h("input", { type: "number", min: 0, max: V.frames - 1, value: r.end_frame, style: "width:84px" });
+    const a = h("input", { type: "number", "aria-label": "First frame", min: 0, max: V.frames - 1, value: r.start_frame, style: "width:84px" }), b = h("input", { type: "number", "aria-label": "Last frame", min: 0, max: V.frames - 1, value: r.end_frame, style: "width:84px" });
     body.push(h("div", { class: "row", style: "margin-top:6px" }, "Frames", a, "to", b, h("button", { class: "small", onclick: async () => { if (await draftOp("/api/draft/update", { video_id: vid, ids: [id], values: { start_frame: +a.value, end_frame: +b.value } })) afterEdit(); } }, "Apply")));
   }
   if (r.kind === "mask") body.push(h("div", { style: "margin-top:8px" }, h("button", { class: "small", onclick: () => editMask(r) }, "Edit mask shape")));
-  if (r.kind === "box") body.push(h("p", { class: "muted" }, "With the Select tool, drag the box to move it or its handles to resize."));
+  if (r.kind === "box" && editableBox(r)) {
+    const els = numberRow(["Left", "Top", "Right", "Bottom"], [r.x0, r.y0, r.x1, r.y1].map(v => Math.round(v * 10) / 10), [0, 0, 0, 0], [V.size[0], V.size[1], V.size[0], V.size[1]], 0.1);
+    body.push(h("p", { class: "muted" }, "With the Select tool, drag the box to move it or its handles to resize. Or type exact values:"), h("div", { class: "row tight" }, els),
+      h("button", { class: "small", style: "margin-top:6px", onclick: async () => {
+        const b = readNumbers(els);
+        if (!b.every(Number.isFinite) || b[2] - b[0] < 2 || b[3] - b[1] < 2) { toast("Give the left, top, right and bottom of the box; it must be at least 2 pixels each way.", true); return; }
+        if (await draftOp("/api/draft/update", { video_id: vid, ids: [id], values: { box: b }, ...vtag() })) afterEdit();
+      } }, "Apply box"));
+  }
   return h("div", { style: "margin-top:14px;border-top:1.5px solid var(--ink);padding-top:10px" }, h("h2", {}, "Selected"), body);
+}
+
+/* ---------- by numbers: the same edits without a pointer (for keyboards and screen readers, and for exact values) ---------- */
+function numberRow(names, values, min, max, step) {
+  return names.map((n, i) => h("label", { class: "row tight num-in" }, n, h("input", { type: "number", "aria-label": n, value: values[i], min: min[i], max: max[i], step: step || 1, style: "width:78px" })));
+}
+const readNumbers = rowEls => rowEls.map(l => l.querySelector("input").valueAsNumber);
+function boxByNumbers() {
+  const [W, H] = V.size, els = numberRow(["Left", "Top", "Right", "Bottom"], [Math.round(W * .25), Math.round(H * .25), Math.round(W * .75), Math.round(H * .75)], [0, 0, 0, 0], [W, H, W, H]);
+  return h("details", { class: "bynum", open: !!V.bynumOpen, ontoggle: e => { V.bynumOpen = e.target.open; } }, h("summary", {}, "Add a box by numbers"), h("div", { class: "row tight" }, els),
+    h("p", { class: "muted", style: "font-size:12.5px" }, `In the pixels of the picture (${W}×${H}), on frame ${V.n}, with the label and track chosen above.`),
+    h("button", { class: "small primary", onclick: async () => {
+      if (V.shown !== V.n) { toast("The picture on screen is not this frame yet. Wait a moment and try again.", true); return; }
+      if (!needLabel()) return;
+      const [x0, y0, x1, y1] = readNumbers(els);
+      if (![x0, y0, x1, y1].every(Number.isFinite) || x1 - x0 < 2 || y1 - y0 < 2) { toast("Give the left, top, right and bottom of the box; it must be at least 2 pixels each way.", true); return; }
+      if (x0 < 0 || y0 < 0 || x1 > W || y1 > H) { toast(`The box must lie inside the picture (0 to ${W} across, 0 to ${H} down).`, true); return; }
+      const row = { kind: "box", label: V.label, start_frame: V.shown, box: [x0, y0, x1, y1], ...vtag() }, tv = trackValue();
+      if (tv != null) row.track_id = tv;
+      const res = await draftOp("/api/draft/add", { video_id: V.vid, row });
+      if (res) { V.sel = res.id; if (V.track === "new") V.track = String(tv); await afterEdit(); }
+    } }, "Add box"));
+}
+function spanByNumbers() {
+  const els = numberRow(["From frame", "To frame"], [V.n, V.n], [0, 0], [V.frames - 1, V.frames - 1]);
+  return h("details", { class: "bynum", open: !!V.bynumOpen, ontoggle: e => { V.bynumOpen = e.target.open; } }, h("summary", {}, "Label frames by numbers"), h("div", { class: "row tight" }, els),
+    h("button", { class: "small primary", onclick: async () => {
+      if (!needLabel()) return;
+      const [lo, hi] = readNumbers(els);
+      if (!Number.isInteger(lo) || !Number.isInteger(hi) || lo < 0 || hi < lo || hi > V.frames - 1) { toast(`Give a first and last frame between 0 and ${V.frames - 1}, the first not after the last.`, true); return; }
+      if (await draftOp("/api/draft/add", { video_id: V.vid, row: { kind: "marker", label: V.label, start_frame: lo, end_frame: hi, ...vtag() } })) { toast(lo === hi ? `Labelled frame ${lo}` : `Labelled frames ${lo} to ${hi}`); await afterEdit(); }
+    } }, "Add span"));
 }
 
 /* ---------- keys ---------- */

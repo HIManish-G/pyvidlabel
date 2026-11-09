@@ -213,11 +213,31 @@ def mask_to_bits(mask: np.ndarray) -> dict:
     return {"width": w, "height": h, "data": base64.b64encode(np.packbits(mask.reshape(-1)).tobytes()).decode("ascii")}
 
 
-def _with_mask(state: UIState, video_id: str, data: dict, key: str) -> dict:
-    """Replace `mask_bits` in a request's row or values by a boolean `mask` array of the right size."""
+def _with_mask(state: UIState, video_id: str, data: dict, key: str, *, view_id: str | None = None, editing: bool = False) -> dict:
+    """Replace `mask_bits` in a request's row or values by a boolean `mask` array of the right size.
+
+    With `view_id`, boxes and masks are in the pixels of that view's picture and are converted here to the video's own pixels, which is how
+    the draft keeps them. (The library requires everything in a view to lie inside its region, so a mask edited in a view has nothing outside it.)"""
     data = dict(data)
+    ds = state.dataset()
+    view = ds.view(view_id) if view_id else None
+    if view is not None and view.video_id != video_id:
+        raise ValueError(f"view '{view_id}' belongs to video '{view.video_id}', not '{video_id}'")
+    if view is not None and data.get("box") is not None:
+        data["box"] = list(view.to_source_box(tuple(data["box"])))
     if "mask_bits" in data:
-        data["mask"] = bits_to_mask(data.pop("mask_bits"), state.dataset().video(video_id).display_size)
+        W, H = ds.video(video_id).display_size
+        if view is None or view.region is None:
+            data["mask"] = bits_to_mask(data.pop("mask_bits"), (W, H))
+        else:
+            r = view.region
+            out_w, out_h = view.output_size or (r.width, r.height)
+            m = bits_to_mask(data.pop("mask_bits"), (out_w, out_h))
+            if (out_w, out_h) != (r.width, r.height):
+                if editing:
+                    raise ValueError("this view is resized, so a mask cannot be edited in it without losing detail. Edit it on the whole frame")
+                m = _masks.resize_nearest(m, r.height, r.width)
+            data["mask"] = _masks.place_in_frame(m, r.x, r.y, W, H)
     return data
 
 
@@ -511,9 +531,15 @@ def mask_png(state: UIState, ctx: Ctx):
 def mask_bits(state: UIState, ctx: Ctx):
     """One mask in full-frame size, to edit it in the page. Needs `frame` (any frame the row covers) to find the row quickly."""
     vid, aid, n = ctx.params["video_id"], to_id(ctx.params["ann_id"]), int(ctx.q.get("frame", 0))
-    for r in _rows(state, ctx, vid, {"frames": (n, n)}):
+    view_id = ctx.q.get("view_id") or None
+    view = state.dataset().view(view_id) if view_id else None
+    for r in _rows(state, ctx, vid, {"frames": (n, n), "view_id": [view_id]}):
         if r["annotation_id"] == aid and r.get("mask") is not None:
-            return mask_to_bits(_masks.decode(bytes(r["mask"])))
+            m = _masks.decode(bytes(r["mask"]))
+            if view is not None:
+                from ..frames import crop_mask_to_view
+                m = crop_mask_to_view(m, view)
+            return mask_to_bits(m)
     raise KeyError(f"no mask {ctx.params['ann_id']} on frame {n} of video '{vid}'")
 
 
@@ -656,7 +682,8 @@ def _author(ctx: Ctx) -> str:
 def draft_add(state: UIState, ctx: Ctx):
     d = _draft(state, ctx)
     vid = ctx.need("video_id")
-    row = _with_mask(state, vid, dict(ctx.need("row")), "row")
+    row = dict(ctx.need("row"))
+    row = _with_mask(state, vid, row, "row", view_id=row.get("view_id"))
     tmp = d.add(vid, row)
     return {"id": tmp, "draft": out(d.state())}
 
@@ -665,7 +692,8 @@ def draft_add(state: UIState, ctx: Ctx):
 def draft_update(state: UIState, ctx: Ctx):
     d = _draft(state, ctx)
     vid = ctx.need("video_id")
-    d.update(vid, [to_id(i) for i in ctx.need("ids")], **_with_mask(state, vid, dict(ctx.need("values")), "values"))
+    ids, values, view_id = [to_id(i) for i in ctx.need("ids")], dict(ctx.need("values")), ctx.body.get("view_id") or None
+    d.update(vid, ids, **_with_mask(state, vid, values, "values", view_id=view_id, editing=True))
     return out(d.state())
 
 
@@ -755,24 +783,74 @@ def releases(state: UIState, ctx: Ctx):
     return out({"releases": _releases(state.dataset())})
 
 
+def _boxes_px(arr, box_format: str, normalized: bool, size: tuple[int, int]) -> list[list[float]]:
+    """Target boxes (in the loader's format, maybe as fractions) back to x0, y0, x1, y1 in the pixels of the sample image."""
+    b = np.asarray(arr, np.float64).reshape(-1, 4)
+    if normalized:
+        b = b * np.array([size[0], size[1], size[0], size[1]])
+    if box_format == "xywh":
+        b = np.stack([b[:, 0], b[:, 1], b[:, 0] + b[:, 2], b[:, 1] + b[:, 3]], 1)
+    elif box_format == "cxcywh":
+        b = np.stack([b[:, 0] - b[:, 2] / 2, b[:, 1] - b[:, 3] / 2, b[:, 0] + b[:, 2] / 2, b[:, 1] + b[:, 3] / 2], 1)
+    return np.round(b, 2).tolist()
+
+
 @route("GET", "/api/sample", covers=("FrameSamples.targets", "FrameSamples.describe"))
 def sample_inspector(state: UIState, ctx: Ctx):
-    """What one training sample would contain for a frame (the targets, not the pixels)."""
+    """What one training sample would contain for a frame, as the loader would build it: the targets, the boxes back in image pixels,
+    small pictures of the masks, and the neighbouring frames that are in the training set."""
     from ..samples import FrameSamples
     ds = state.dataset()
     vid, n = ctx.q.get("video_id"), int(ctx.q.get("frame", 0))
     meta = ds.video(vid)
+    if not 0 <= n < meta.frame_count:
+        raise KeyError(f"video '{vid}' has no frame {n}")
     release = ctx.q.get("release") or "latest"
-    s = FrameSamples(ds, release=None if release == "none" else release, view_id=ctx.q.get("view_id") or None,
-                     kinds=tuple(ctx.qlist("kind") or ("box", "mask")), with_masks=False, box_format=ctx.q.get("box_format", "xyxy"),
-                     normalized=ctx.q.get("normalized") == "1", label_offset=int(ctx.q.get("label_offset", 0)))
+    kinds = tuple(ctx.qlist("kind") or ("box", "mask"))
+    box_format, normalized = ctx.q.get("box_format", "xyxy"), ctx.q.get("normalized") == "1"
+    s = FrameSamples(ds, release=None if release == "none" else release, view_id=ctx.q.get("view_id") or None, kinds=kinds,
+                     with_masks="mask" in kinds, box_format=box_format, normalized=normalized, label_offset=int(ctx.q.get("label_offset", 0)))
     view = s.view
     size = tuple(view.output_size) if view is not None and view.output_size else (
         (view.region.width, view.region.height) if view is not None and view.region else meta.display_size)
-    t = s.targets(vid, n, (int(size[0]), int(size[1])))
-    return out({"describe": s.describe(), "class_names": s.class_names, "image_size": list(size),
+    size = (int(size[0]), int(size[1]))
+    t = s.targets(vid, n, size)
+    frames_here = sorted({f for v, f in s.index if v == vid})
+    import bisect
+    i = bisect.bisect_left(frames_here, n)
+    nxt = frames_here[i + 1] if i < len(frames_here) and frames_here[i] == n and i + 1 < len(frames_here) else (frames_here[i] if i < len(frames_here) and frames_here[i] > n else None)
+    prv = frames_here[i - 1] if i > 0 else None
+    names, offset = s.class_names, int(ctx.q.get("label_offset", 0))
+    labels = np.asarray(t.get("labels", [])).astype(int).tolist()
+    class_name = lambda c: names[c - offset] if 0 <= c - offset < len(names) else None
+    mask_pngs = []
+    if "masks" in t:
+        for k, m in enumerate(np.asarray(t["masks"])[:24]):
+            o = _mask_overlay_array(m > 0)
+            if o:
+                mask_pngs.append({"index": k, "png": "data:image/png;base64," + base64.b64encode(o[0]).decode(), "x": o[1], "y": o[2], "w": o[3], "h": o[4]})
+    return out({"describe": s.describe(), "class_names": names, "image_size": list(size), "frame_count": meta.frame_count,
                 "targets": {k: {"shape": list(np.shape(v)), "values": np.asarray(v).tolist() if np.size(v) <= 200 else None}
-                            for k, v in t.items()}, "in_samples": (vid, n) in set(s.index)})
+                            for k, v in t.items() if k != "masks"} | ({"masks": {"shape": list(np.shape(t["masks"])), "values": None}} if "masks" in t else {}),
+                "objects": [{"index": k, "class_id": labels[k], "class_name": class_name(labels[k]),
+                             "track_id": (int(t["track_ids"][k]) if "track_ids" in t and int(t["track_ids"][k]) >= 0 else None),
+                             "annotation_id": str(int(t["annotation_ids"][k])) if "annotation_ids" in t else None,
+                             "box": _boxes_px(t["boxes"], box_format, normalized, size)[k], "target_box": np.round(np.asarray(t["boxes"], np.float64).reshape(-1, 4)[k], 4).tolist()}
+                            for k in range(min(len(labels), 500))],
+                "mask_pngs": mask_pngs, "in_samples": (vid, n) in set(s.index), "n_samples_in_video": len(frames_here),
+                "previous_sample": prv if prv != n else None, "next_sample": nxt})
+
+
+def _mask_overlay_array(mask: np.ndarray) -> tuple[bytes, int, int, int, int] | None:
+    ys, xs = np.nonzero(mask)
+    if not len(ys):
+        return None
+    y0, x0 = int(ys.min()), int(xs.min())
+    crop = mask[y0:int(ys.max()) + 1, x0:int(xs.max()) + 1]
+    rgba = np.zeros((*crop.shape, 4), np.uint8)
+    rgba[..., :3] = 255
+    rgba[..., 3] = crop.astype(np.uint8) * 255
+    return _png(rgba), x0, y0, crop.shape[1], crop.shape[0]
 
 
 # ------------------------------------------------------------------ jobs

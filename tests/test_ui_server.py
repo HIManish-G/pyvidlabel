@@ -528,3 +528,126 @@ def test_proposals_page_api_edge_cases(env):
     after = Dataset.open(ds.path)
     assert len(after.annotations("clip", track_id=5)) == 2
     assert {r["author"] for r in after.annotations("clip", track_id=5).to_pylist()} == {"agent:scout"}
+
+
+# ---------------------------------------------------------------- drawing inside a view
+def _bits(mask):
+    from vidlabel.ui.app import mask_to_bits
+    return mask_to_bits(mask)
+
+
+def test_boxes_drawn_in_a_view_are_stored_in_video_pixels_and_come_back_in_view_pixels(env):
+    c, ds, st = env
+    ds.add_view({"view_id": "crop", "video_id": "clip", "region": {"x": 20, "y": 10, "width": 40, "height": 30}, "allowed_labels": ["thing"]})
+    ds.add_view({"view_id": "big", "video_id": "clip", "region": {"x": 20, "y": 10, "width": 40, "height": 30}, "output_size": [80, 60]})
+    r = post(c, "/api/draft/add", {"video_id": "clip", "row": {"kind": "box", "label": "thing", "start_frame": 25, "box": [4, 6, 24, 16], "view_id": "crop", "track_id": 7}})
+    assert r.status_code == 200, r.text
+    r2 = post(c, "/api/draft/add", {"video_id": "clip", "row": {"kind": "box", "label": "thing", "start_frame": 25, "box": [8, 12, 48, 32], "view_id": "big", "track_id": 8}})
+    assert r2.status_code == 200
+    assert post(c, "/api/draft/commit", {"message": "in views"}).status_code == 200
+    rows = {x["track_id"]: x for x in Dataset.open(ds.path).annotations("clip", frames=(25, 25), view_id=["crop", "big"]).to_pylist()}
+    assert (rows[7]["x0"], rows[7]["y0"], rows[7]["x1"], rows[7]["y1"]) == (24, 16, 44, 26) and rows[7]["view_id"] == "crop"
+    assert (rows[8]["x0"], rows[8]["y0"], rows[8]["x1"], rows[8]["y1"]) == (24, 16, 44, 26) and rows[8]["view_id"] == "big"     # 2x view: halved
+    back = c.get("/api/annotations-range/clip", params={"start": 25, "end": 25, "view_id": "crop"}).json()
+    row = next(x for x in back["rows"] if x["track_id"] == 7)
+    assert [row["x0"], row["y0"], row["x1"], row["y1"]] == [4, 6, 24, 16]                          # what the person drew
+    big = next(x for x in c.get("/api/annotations-range/clip", params={"start": 25, "end": 25, "view_id": "big"}).json()["rows"] if x["track_id"] == 8)
+    assert [big["x0"], big["y0"], big["x1"], big["y1"]] == [8, 12, 48, 32]
+    assert not [x for x in c.get("/api/annotations-range/clip", params={"start": 25, "end": 25, "view_id": ""}).json()["rows"] if x["track_id"] in (7, 8)]   # not on the whole frame
+
+
+def test_moving_a_box_in_a_view_converts_the_new_position(env):
+    c, ds, st = env
+    ds.add_view({"view_id": "crop", "video_id": "clip", "region": {"x": 20, "y": 10, "width": 40, "height": 30}})
+    ds.add_annotations([{"kind": "box", "label": "thing", "start_frame": 30, "box": (24, 16, 44, 26), "view_id": "crop", "origin": "human"}], "clip")
+    aid = Dataset.open(ds.path).annotations("clip", frames=(30, 30), view_id=["crop"]).to_pylist()[0]["annotation_id"]
+    assert post(c, "/api/draft/update", {"video_id": "clip", "ids": [str(aid)], "values": {"box": [10, 5, 30, 15]}, "view_id": "crop"}).status_code == 200
+    post(c, "/api/draft/commit", {"message": "move"})
+    r = Dataset.open(ds.path).annotations("clip", frames=(30, 30), view_id=["crop"]).to_pylist()[0]
+    assert (r["x0"], r["y0"], r["x1"], r["y1"]) == (30, 15, 50, 25)
+
+
+def test_masks_drawn_in_a_view_land_in_the_right_place_and_can_be_edited_there(env):
+    c, ds, st = env
+    from vidlabel import masks
+    W, H = 96, 64
+    ds.add_view({"view_id": "crop", "video_id": "clip", "region": {"x": 20, "y": 10, "width": 40, "height": 30}})
+    m = np.zeros((30, 40), bool)
+    m[5:15, 10:30] = True
+    r = post(c, "/api/draft/add", {"video_id": "clip", "row": {"kind": "mask", "label": "thing", "start_frame": 26, "mask_bits": _bits(m), "view_id": "crop", "track_id": 3}})
+    assert r.status_code == 200, r.text
+    post(c, "/api/draft/commit", {"message": "mask in view"})
+    row = Dataset.open(ds.path).annotations("clip", frames=(26, 26), kind="mask", view_id=["crop"]).to_pylist()[0]
+    full = masks.decode(row["mask"])
+    assert full.shape == (H, W) and full.sum() == m.sum() and full[15:25, 30:50].all() and (row["x0"], row["y0"], row["x1"], row["y1"]) == (30, 15, 50, 25)
+    got = c.get(f"/api/mask-bits/clip/{row['annotation_id']}", params={"frame": 26, "view_id": "crop"}).json()
+    assert (got["width"], got["height"]) == (40, 30) and got == _bits(m)                    # round trip is exact
+
+    # editing it in the view replaces it (everything in a view lies inside the view, so nothing outside can be lost)
+    edited = np.zeros((30, 40), bool)
+    edited[0:5, 0:5] = True
+    assert post(c, "/api/draft/update", {"video_id": "clip", "ids": [str(row["annotation_id"])], "values": {"mask_bits": _bits(edited)}, "frame": 26, "view_id": "crop"}).status_code == 200
+    post(c, "/api/draft/commit", {"message": "edit"})
+    new = masks.decode(Dataset.open(ds.path).annotations("clip", frames=(26, 26), kind="mask", view_id=["crop"]).to_pylist()[0]["mask"])
+    assert new.sum() == 25 and new[10:15, 20:25].all() and (new[:10] == 0).all()
+
+
+def test_a_resized_view_takes_new_masks_but_refuses_to_edit_old_ones(env):
+    c, ds, st = env
+    ds.add_view({"view_id": "big", "video_id": "clip", "region": {"x": 20, "y": 10, "width": 40, "height": 30}, "output_size": [80, 60]})
+    m = np.zeros((60, 80), bool)
+    m[10:30, 20:60] = True
+    assert post(c, "/api/draft/add", {"video_id": "clip", "row": {"kind": "mask", "label": "thing", "start_frame": 28, "mask_bits": _bits(m), "view_id": "big"}}).status_code == 200
+    post(c, "/api/draft/commit", {"message": "m"})
+    row = Dataset.open(ds.path).annotations("clip", frames=(28, 28), kind="mask", view_id=["big"]).to_pylist()[0]
+    assert (row["x0"], row["y0"], row["x1"], row["y1"]) == (30, 15, 50, 25)
+    r = post(c, "/api/draft/update", {"video_id": "clip", "ids": [str(row["annotation_id"])], "values": {"mask_bits": _bits(m)}, "frame": 28, "view_id": "big"})
+    assert r.status_code == 400 and "resized" in r.text and "whole frame" in r.text
+    assert post(c, "/api/draft/discard", {}).status_code == 200
+
+
+def test_view_rules_still_apply_to_drawn_rows(env):
+    c, ds, st = env
+    ds.add_view({"view_id": "crop", "video_id": "clip", "region": {"x": 20, "y": 10, "width": 40, "height": 30}, "allowed_labels": ["thing"], "frame_range": [10, 20]})
+    ok = {"kind": "box", "label": "thing", "start_frame": 15, "box": [1, 1, 9, 9], "view_id": "crop"}
+    assert post(c, "/api/draft/add", {"video_id": "clip", "row": {**ok, "label": "other"}}).status_code == 400          # label not allowed in this view
+    assert post(c, "/api/draft/add", {"video_id": "clip", "row": {**ok, "start_frame": 30}}).status_code == 400         # frame outside the view's range
+    assert post(c, "/api/draft/add", {"video_id": "clip", "row": {**ok, "view_id": "nope"}}).status_code in (400, 404)       # no such view
+    ds.add_video({"video_id": "w", "frame_count": 5, "fps": {"num": 25, "den": 1}, "width": 32, "height": 32})
+    assert post(c, "/api/draft/add", {"video_id": "w", "row": {**ok, "start_frame": 2}}).status_code == 400            # a view of another video
+    assert post(c, "/api/draft/add", {"video_id": "clip", "row": ok}).status_code == 200
+    assert post(c, "/api/draft/add", {"video_id": "clip", "row": {**ok, "track_id": 1}}).status_code == 200
+    assert post(c, "/api/draft/add", {"video_id": "clip", "row": {**ok, "track_id": 1}}).status_code == 400            # the one-box-per-track rule holds in a view too
+    assert post(c, "/api/draft/add", {"video_id": "clip", "row": {"kind": "marker", "label": "thing", "start_frame": 11, "end_frame": 14, "view_id": "crop"}}).status_code == 200
+    post(c, "/api/draft/discard", {})
+
+
+def test_sample_inspector_gives_objects_boxes_in_pixels_masks_and_neighbours(env):
+    c, ds, st = env
+    base = {"video_id": "clip", "release": "none", "kind": ["box", "mask"]}
+    s = c.get("/api/sample", params={**base, "frame": 5}).json()
+    assert s["image_size"] == [96, 64] and s["frame_count"] == 40 and s["in_samples"] is True
+    assert s["objects"] and all({"index", "class_id", "class_name", "track_id", "annotation_id", "box", "target_box"} <= set(o) for o in s["objects"])
+    o = s["objects"][0]
+    assert o["class_name"] in ("thing", "other") and o["box"] == [5, 5, 40, 40] and isinstance(o["annotation_id"], str)
+    assert s["previous_sample"] == 4 and s["next_sample"] == 6
+    first = c.get("/api/sample", params={**base, "frame": 0}).json()
+    assert first["previous_sample"] is None and first["next_sample"] == 1
+    last = c.get("/api/sample", params={**base, "frame": 39}).json()
+    assert last["next_sample"] is None or last["in_samples"] is False
+    gap = c.get("/api/sample", params={**base, "frame": 20}).json()                                  # a frame with nothing on it
+    assert gap["in_samples"] is False and gap["objects"] == [] and gap["previous_sample"] is not None
+    # the box in the loader's format, and the same box back in pixels
+    for fmt, norm, want in (("xywh", False, [5, 5, 35, 35]), ("cxcywh", False, [22.5, 22.5, 35, 35]), ("xyxy", True, [5 / 96, 5 / 64, 40 / 96, 40 / 64])):
+        t = c.get("/api/sample", params={**base, "frame": 5, "box_format": fmt, "normalized": "1" if norm else ""}).json()["objects"][0]
+        assert t["box"] == [5, 5, 40, 40] and np.allclose(t["target_box"], want, atol=1e-3), (fmt, norm, t)
+    only_boxes = c.get("/api/sample", params={"video_id": "clip", "release": "none", "kind": ["box"], "frame": 5}).json()
+    assert only_boxes["mask_pngs"] == [] and "masks" not in only_boxes["targets"]
+    on3 = c.get("/api/sample", params={**base, "frame": 3}).json()                                   # frame 3 has a box and a mask
+    assert len(on3["objects"]) == 2 and len(on3["mask_pngs"]) == 1 and on3["mask_pngs"][0]["png"].startswith("data:image/png;base64,")
+    mp = on3["mask_pngs"][0]
+    assert (mp["x"], mp["y"], mp["w"], mp["h"]) == (30, 20, 20, 10) and on3["objects"][mp["index"]]["class_name"] == "other"
+    assert c.get("/api/sample", params={**base, "frame": 500}).status_code in (400, 404)
+    assert c.get("/api/sample", params={**base, "frame": 5, "video_id": "nope"}).status_code in (400, 404)
+    assert c.get("/api/sample", params={**base, "frame": 5, "box_format": "zzz"}).status_code == 400
+    assert c.get("/api/sample", params={**base, "frame": 5, "release": "r-does-not-exist"}).status_code in (400, 404)

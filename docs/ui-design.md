@@ -153,14 +153,14 @@ browser. The page is a client of this interface, so a script could use it too. T
 1. Server, draft and history core, jobs, and the whole interface of routes, with tests. Overview, Browse, Viewer (read only), Review, Validation, Releases pages.
 2. Builder pages: New dataset, Labels, Videos and Video health, Views, derive-view.
 3. Drawing: boxes and spans, then masks (brush, eraser, polygon).
-4. Polish: undo and history screens, shortcuts, sample inspector, documentation and a screen-by-screen guide.
+4. Polish: undo and history screens, shortcuts, sample inspector page, drawing inside a view, an accessibility pass, documentation and a screen-by-screen guide.
 
 ## Decisions
 
 - **Drafts are per author**, with conflicts caught at commit. (Decided.)
 - **History keeps the last 50 commits**, because reverting needs the removed rows and masks can be large. (Decided.)
 - **Reverting** commits the inverse of a past commit, with the same row ids; rows changed again since are left alone and listed.
-- **Open:** accessibility beyond the keyboard shortcuts and a light and dark theme (both exist; a review of contrast and screen-reader labels is part of stage 4).
+- **Done, with limits:** accessibility. Contrast, names, headings, dialogs, announcements and a numbers-based way to add and edit boxes and spans are built and tested with axe-core. **Open:** a trial with real assistive technology, and a keyboard way to draw masks.
 
 ## What is built
 
@@ -168,9 +168,9 @@ browser. The page is a client of this interface, so a script could use it too. T
 |---|---|
 | 1. server, draft, history, jobs, routes, tests; Overview, Videos, Viewer (read only plus approve, reject and delete of rows), Review, Validation, Releases, History, Changes panel | built |
 | 2. builder pages: Labels, Videos (add, check, index, folders for moved files, frame cache), Views (draw a region, create, copy labels in with a preview) | built |
-| 3. drawing: select, move and resize boxes, new boxes, spans on the timeline, masks with brush, eraser and polygon, editing an existing mask | built (whole frame only; views get rows through Copy labels in) |
+| 3. drawing: select, move and resize boxes, new boxes, spans on the timeline, masks with brush, eraser and polygon, editing an existing mask | built (on the whole frame and inside a view) |
 | 3b. viewer rework: single current frame, frame cache and prefetch, playback clock, new timeline (zoom, lanes, minimap, span editing), picture zoom and pan, mask editor polish | built |
-| 4. polish and the sample inspector page | the sample inspector is on the Releases page; the rest is not built |
+| 4. polish: sample inspector page, drawing inside a view, accessibility pass | built; the screen-by-screen guide is not written |
 
 ## Visual identity
 

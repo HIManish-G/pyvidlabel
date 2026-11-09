@@ -7,7 +7,7 @@ An honest list of what vidlabel does not do, what has not been verified, and wha
 | not included | why, and what to do |
 |---|---|
 | importers and exporters for COCO, YOLO, MOT, CVAT, ... | formats vary too much for one library to cover well. Write a converter on `add_annotations` ([guide](converters.md)); a tested example is in `examples/convert_csv.py` |
-| a labelling interface | vidlabel is the format and library between labelling tools and training code. A local web interface (`vidlabel ui`) can browse, review, validate and release; drawing boxes, spans and masks works on the whole frame (not inside a view) (see [Web interface](ui.md)) |
+| a labelling interface | vidlabel is the format and library between labelling tools and training code. A local web interface (`vidlabel ui`) can browse, review, validate and release; drawing boxes, spans and masks works on the whole frame and inside a view; accessibility was checked by tools, not by assistive-technology users; drawing masks needs a pointer (see [Web interface](ui.md)) |
 | storing video pixels | datasets reference videos by path hint and content hash |
 | sampling policy (class balancing, weighting, curriculum) | it is the user's decision; vidlabel arranges cheap reading of the frames you choose (`ReadPlan`) |
 | keypoints, polygons, image-level classes as dedicated kinds | the three kinds are marker, box, mask. Keypoints and polygons can go in `extra` for now or be rasterised to masks; a new kind needs a spec change |
@@ -45,7 +45,7 @@ An honest list of what vidlabel does not do, what has not been verified, and wha
 
 ## Roadmap (not promises)
 
-1. Polish of the local web interface: an accessibility review, more shortcuts, drawing directly inside a view ([design](ui-design.md)).
+1. Testing the local web interface with assistive technology and on touch and pen screens; a keyboard way to draw masks ([design](ui-design.md)).
 2. Publish to PyPI under a final name; add a changelog automation and a signed release process.
 3. Decide on image collections (many images in one table) if people ask for them: single images already work as one-frame videos.
 4. More annotation kinds (keypoints, polygons) if a clear need appears; each needs a spec change and validator rules.

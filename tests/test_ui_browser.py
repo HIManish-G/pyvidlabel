@@ -348,13 +348,18 @@ def test_paint_polygon_erase_and_reshape_a_mask(page):
     assert int(masks.decode(m2["mask"]).sum()) < area1 and m2["x0"] > m["x0"]
 
 
-def test_drawing_is_off_inside_a_view(page):
+def test_drawing_tools_are_available_inside_a_view_and_respect_its_labels(page):
     pg, ds, base = page
     pg.goto(f"{base}/#/video/clip?f=3&view=left_half")
     pg.reload()
     pg.wait_for_selector("canvas.ov")
-    assert pg.locator(".tools button:has-text('Box')").is_disabled()
-    assert pg.locator("text=Choose “Whole frame” to draw").count() == 1
+    assert not pg.locator(".tools button:has-text('Box')").is_disabled()
+    assert "drawing in view left_half" in pg.inner_text(".tools")
+    ds.add_view({"view_id": "only_car", "video_id": "clip", "region": {"x": 0, "y": 0, "width": 48, "height": 32}, "allowed_labels": ["car"]})
+    pg.goto(f"{base}/#/video/clip?f=3&view=only_car")
+    pg.reload()
+    pg.wait_for_selector("canvas.ov")
+    assert pg.locator("select[aria-label='Label for new drawings'] option").all_inner_texts() == ["car"]
 
 
 def test_mask_panel_is_shown_once(page):
@@ -411,7 +416,7 @@ def test_a_click_lands_on_exactly_the_frame_under_the_mouse_also_when_zoomed(pag
         # the playhead is painted at the middle of that frame's column
         cx = pg.evaluate("tlX(V.n + 0.5)")
         assert abs(cx - b["width"] * fx) <= b["width"] / (t1 - t0)
-    pg.click("button[title='Show the whole timeline']")
+    pg.click("button[title='Fit: show the whole timeline']")
     pg.wait_for_function("V.tv.t0 === 0 && V.tv.t1 === 60")
     assert not pg.errors
 
@@ -607,3 +612,91 @@ def test_proposals_page_empty_state_hostile_text_per_video_and_conflicts(page):
     pg.wait_for_selector(".card.empty")
     assert Dr.proposals(ds, "ana") == [] and Dr.Draft.load(ds, "ana").summary()["added"] == 0
     assert [e for e in pg.errors if "status of 400" not in e] == [] and len(pg.errors) == 1       # only the refusal above, which is meant
+
+
+def test_draw_a_box_a_mask_and_a_span_inside_a_view(page):
+    pg, ds, base = page
+    from vidlabel import masks
+    ds.add_view({"view_id": "crop", "video_id": "clip", "region": {"x": 24, "y": 16, "width": 48, "height": 32}})
+    pg.goto(f"{base}/#/video/clip?f=46&view=crop")
+    pg.reload()
+    pg.wait_for_selector("canvas.ov")
+    _settled(pg, 46)
+    assert pg.evaluate("V.size[0] === 48 && V.size[1] === 32")                    # the picture is the view's
+    assert not pg.locator(".tools button:has-text('Box')[disabled]").count()      # tools are available in a view
+    assert "drawing in view crop" in pg.inner_text(".tools")
+    at = _ov(pg)
+    pg.keyboard.press("b")
+    pg.mouse.move(*at(0.10, 0.20))
+    pg.mouse.down()
+    pg.mouse.move(*at(0.30, 0.40), steps=4)
+    pg.mouse.move(*at(0.50, 0.60), steps=4)
+    pg.mouse.up()
+    pg.wait_for_function("document.querySelector('#changes-count').textContent === '1'")
+    pg.keyboard.press("p")
+    for fx, fy in ((0.60, 0.20), (0.90, 0.20), (0.90, 0.80)):
+        pg.mouse.click(*at(fx, fy))
+    pg.mouse.dblclick(*at(0.90, 0.80))
+    pg.click("button:has-text('Save mask')")
+    pg.wait_for_function("document.querySelector('#changes-count').textContent === '2'")
+    pg.wait_for_function("[...V.masks.values()].some(m => m.ready && !m.empty)")       # the pending mask is drawn in the picture, not only after the commit
+    pg.keyboard.press("s")
+    b = pg.locator(".transport canvas").bounding_box()
+    pg.mouse.move(b["x"] + b["width"] * 0.25, b["y"] + 30)
+    pg.mouse.down()
+    pg.mouse.move(b["x"] + b["width"] * 0.30, b["y"] + 30, steps=5)
+    pg.mouse.move(b["x"] + b["width"] * 0.35, b["y"] + 30, steps=5)
+    pg.mouse.up()
+    pg.wait_for_selector(".toast:has-text('Labelled frame')")
+    _commit(pg, "draw in a view")
+    rows = ds.annotations("clip", view_id=["crop"]).to_pylist()
+    box = next(r for r in rows if r["kind"] == "box")
+    assert abs(box["x0"] - (24 + 48 * 0.10)) < 2 and abs(box["y0"] - (16 + 32 * 0.20)) < 2 and abs(box["x1"] - (24 + 48 * 0.50)) < 2 and abs(box["y1"] - (16 + 32 * 0.60)) < 2
+    mrow = next(r for r in rows if r["kind"] == "mask")
+    full = masks.decode(mrow["mask"])
+    assert full.shape == (64, 96) and 24 <= mrow["x0"] and mrow["x1"] <= 72 and 16 <= mrow["y0"] and mrow["y1"] <= 48 and full.sum() > 50
+    assert any(r["kind"] == "marker" for r in rows)
+    assert all(r["view_id"] == "crop" for r in rows) and not [r for r in ds.annotations("clip", frames=(46, 46), view_id=[None]).to_pylist() if r["kind"] != "marker" and r["start_frame"] == 46]
+    # back on the whole frame the box is where it really is
+    pg.goto(f"{base}/#/video/clip?f=46")
+    pg.reload()
+    pg.wait_for_selector("canvas.ov")
+    _settled(pg, 46)
+    assert pg.evaluate("V.rows.filter(r => r.kind === 'box').length") == 0         # a view's rows are not whole-frame rows
+    assert not pg.errors
+
+
+def test_sample_inspector_page_shows_the_targets_and_moves_between_samples(page):
+    pg, ds, base = page
+    pg.goto(f"{base}/#/inspector?video=clip&f=6&release=none")
+    pg.reload()
+    pg.wait_for_selector("h1:has-text('Sample inspector')")
+    pg.wait_for_selector(".inspect-pic .ibox")
+    assert pg.locator("h2:has-text('target')").count() == 1
+    n = pg.locator(".inspect-pic .ibox").count()
+    assert n == pg.locator("table tbody tr").count() - pg.locator("details table tbody tr").count() and n >= 1
+    assert pg.locator(".inspect-pic").get_attribute("aria-label").startswith("Frame 6 of clip")
+    pg.goto(f"{base}/#/inspector?video=clip&f=10&release=none")
+    pg.wait_for_selector(".inspect-pic .imask")                              # a frame with a mask shows it, tinted with its class colour
+    pg.goto(f"{base}/#/inspector?video=clip&f=6&release=none")
+    pg.wait_for_selector(".inspect-pic .ibox")
+    pg.click("button:has-text('Next sample')")
+    pg.wait_for_function("location.hash.includes('f=7')")
+    pg.wait_for_selector(".inspect-pic .ibox")
+    pg.click("button[aria-label='Previous frame']")
+    pg.wait_for_function("location.hash.includes('f=6')")
+    # settings change what the loader would see: boxes as fractions in cxcywh
+    pg.select_option("label:has-text('Box format') select", "cxcywh")
+    pg.check("label:has-text('fractions') input")
+    pg.wait_for_function("location.hash.includes('fmt=cxcywh') && location.hash.includes('norm=1')")
+    pg.wait_for_selector("th:has-text('cxcywh, fractions')")
+    assert all(0 <= float(v) <= 1 for v in pg.locator("table tbody tr td.mono").first.inner_text().split(","))
+    pg.fill("input[aria-label='Frame number']", "500")
+    pg.keyboard.press("Enter")
+    pg.wait_for_selector(".toast.bad, .toast:has-text('no frame')")
+    # the old inspector card on the Releases page is now a link to this page
+    pg.goto(f"{base}/#/releases")
+    pg.reload()
+    pg.click("a:has-text('Inspect what a training sample contains')")
+    pg.wait_for_selector("h1:has-text('Sample inspector')")
+    assert [e for e in pg.errors if "status of 4" not in e] == []

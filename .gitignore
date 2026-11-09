@@ -38,3 +38,6 @@ sample_ds/
 *.avi
 *.webm
 *.mxf
+# axe-core, installed only to run the accessibility test
+node_modules/
+package-lock.json

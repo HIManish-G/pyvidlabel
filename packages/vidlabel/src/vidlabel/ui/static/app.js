@@ -14,6 +14,7 @@ Element.prototype.replaceChildren = function (...kids) {
 function h(tag, attrs, ...kids) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
+    if (k.startsWith("aria-") && v != null) { e.setAttribute(k, String(v)); continue; }       // aria-pressed="false" matters: false is a state, not "absent"
     if (v === false || v == null) continue;
     if (k === "class") e.className = v;
     else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
@@ -34,10 +35,11 @@ function labelColor(name) {
   return `hsl(${x % 360} 70% 52%)`;
 }
 function tag(text, cls) { return h("span", { class: "tag " + (cls || text) }, text); }
+const hth = t => h("th", {}, t === "" ? h("span", { class: "sr" }, "Actions") : t);       // a column header is never empty
 function dot(label) { return h("span", { class: "dot", style: `background:${labelColor(label)}` }); }
 
 function toast(msg, bad) {
-  const t = h("div", { class: "toast" + (bad ? " bad" : "") }, msg);
+  const t = h("div", { class: "toast" + (bad ? " bad" : ""), role: bad ? "alert" : "status" }, msg);
   $("#toasts").append(t);
   setTimeout(() => t.remove(), bad ? 7000 : 3000);
 }
@@ -57,7 +59,8 @@ async function api(method, path, body) {
   }
   return data;
 }
-const GET = (p, q) => api("GET", q ? p + "?" + new URLSearchParams(Object.entries(q).filter(([, v]) => v != null && v !== "")).toString() : p);
+const query = q => { const u = new URLSearchParams(); for (const [k, v] of Object.entries(q)) for (const x of Array.isArray(v) ? v : [v]) if (x != null && x !== "") u.append(k, x); return u.toString(); };      // a list becomes repeated parameters
+const GET = (p, q) => api("GET", q ? p + "?" + query(q) : p);
 const POST = (p, b) => api("POST", p, b || {});
 
 /* run something, show errors as a message */
@@ -67,16 +70,30 @@ async function attempt(fn, okMsg) {
 }
 
 function modal(title, body, buttons) {
-  const back = h("div", { class: "modal-back", onclick: e => { if (e.target === back) close(); } });
-  const close = () => back.remove();
-  back.append(h("div", { class: "modal", role: "dialog" }, h("h2", {}, title), body,
-    h("div", { class: "row", style: "margin-top:14px;justify-content:flex-end" }, (buttons || []).map(b =>
-      h("button", { class: b.primary ? "primary" : "", onclick: async () => { if ((await b.run?.(close)) !== false && !b.stay) close(); } }, b.text)))));
+  const before = document.activeElement;
+  let dismiss = () => {};
+  const back = h("div", { class: "modal-back", onclick: e => { if (e.target === back) dismiss(); } });
+  const close = () => { back.remove(); if (before && before.isConnected && before.focus) before.focus(); };       // focus goes back to where it was
+  const heading = h("h2", { id: "modal-title-" + Math.random().toString(36).slice(2) }, title);
+  const btns = (buttons || []).map(b => h("button", { class: b.primary ? "primary" : "", onclick: async () => { if ((await b.run?.(close)) !== false && !b.stay) close(); } }, b.text));
+  const dialog = h("div", { class: "modal", role: "dialog", "aria-modal": "true", "aria-labelledby": heading.id }, heading, body, h("div", { class: "row", style: "margin-top:14px;justify-content:flex-end" }, btns));
+  const cancelIdx = (buttons || []).findIndex(b => b.cancel);
+  dismiss = () => { if (cancelIdx >= 0) btns[cancelIdx].click(); else close(); };                                  // Escape and a click outside mean "cancel"
+  dialog.addEventListener("keydown", e => {
+    if (e.key === "Escape") { e.stopPropagation(); e.preventDefault(); dismiss(); return; }
+    if (e.key !== "Tab") return;                                                                                   // keep Tab inside the dialog
+    const f = [...dialog.querySelectorAll("button, input, select, textarea, a[href], [tabindex]:not([tabindex='-1'])")].filter(x => !x.disabled && x.offsetParent !== null);
+    if (!f.length) return;
+    const first = f[0], last = f[f.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); } else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
+  back.append(dialog);
   $("#modal-root").append(back);
+  setTimeout(() => { const t = dialog.querySelector("input, select, textarea") || btns[btns.length - 1]; if (t && !dialog.contains(document.activeElement)) t.focus(); }, 0);
   return close;
 }
 function confirmBox(title, text) {
-  return new Promise(res => modal(title, h("p", {}, text), [{ text: "Cancel", run: () => res(false) }, { text: "OK", primary: true, run: () => res(true) }]));
+  return new Promise(res => modal(title, h("p", {}, text), [{ text: "Cancel", cancel: true, run: () => res(false) }, { text: "OK", primary: true, run: () => res(true) }]));
 }
 
 /* ---------- state refresh ---------- */
@@ -95,7 +112,7 @@ let _navPage = "overview";
 function paintNav(page) {
   if (page) _navPage = page;
   const waiting = (S.info && S.info.proposals) || 0;
-  $("#nav").replaceChildren(...NAV.map(([k, t]) => h("a", { href: "#/" + k, class: (_navPage === k || (k === "browse" && _navPage === "video")) ? "on" : "" },
+  $("#nav").replaceChildren(...NAV.map(([k, t]) => h("a", { href: "#/" + k, class: (_navPage === k || (k === "browse" && _navPage === "video")) ? "on" : "", "aria-current": (_navPage === k || (k === "browse" && _navPage === "video")) ? "page" : null },
     t, k === "proposals" && waiting ? [" ", h("span", { class: "badge", title: waiting + " rows proposed by agents are waiting for you" }, waiting)] : null)));
 }
 
@@ -137,7 +154,7 @@ function renderDrawer() {
       h("span", { class: "t" }, o.label), h("span", { class: "muted" }, o.video_id),
       h("button", { class: "small", title: "Remove this edit and anything built on it", onclick: async () => { await draftOp("/api/draft/discard", { index: o.index }); render(); } }, "×")))));
   } else d.append(h("div", { class: "empty" }, "No pending changes."));
-  const msg = h("textarea", { rows: 2, placeholder: "Describe what you changed (required), e.g. “rejected the blurry tracks in clip 3”" });
+  const msg = h("textarea", { rows: 2, "aria-label": "Commit message", placeholder: "Describe what you changed (required), e.g. “rejected the blurry tracks in clip 3”" });
   const note = h("div");
   const commit = async (reapply) => {
     if (!msg.value.trim()) { toast("Write a short message first.", true); msg.focus(); return; }
@@ -159,7 +176,7 @@ function renderDrawer() {
     h("button", { class: "primary", disabled: n === 0, onclick: () => commit(false) }, "Commit to dataset")), note);
   d.append(h("p", { class: "muted" }, "A commit is all or nothing, is checked against the validator first, and can be undone later from History."));
 }
-function setDrawer(open) { $("#drawer").hidden = !open; document.body.classList.toggle("drawer-open", open); if (open) refreshDraft().then(renderDrawer); }
+function setDrawer(open) { $("#drawer").hidden = !open; $("#changes-btn").setAttribute("aria-expanded", open); document.body.classList.toggle("drawer-open", open); if (open) refreshDraft().then(renderDrawer); }
 function toggleDrawer() { setDrawer($("#drawer").hidden); }
 
 /* ---------- jobs ---------- */
@@ -229,7 +246,7 @@ function pickFolder(start, then, files) {
 }
 
 /* ---------- router ---------- */
-const NAV = [["overview", "Overview"], ["browse", "Videos"], ["labels", "Labels"], ["views", "Views"], ["review", "Review"], ["proposals", "Proposals"], ["validation", "Validation"], ["releases", "Releases"], ["history", "History"]];
+const NAV = [["overview", "Overview"], ["browse", "Videos"], ["labels", "Labels"], ["views", "Views"], ["review", "Review"], ["proposals", "Proposals"], ["validation", "Validation"], ["releases", "Releases"], ["inspector", "Sample inspector"], ["history", "History"]];
 function parseHash() {
   const [path, query] = (location.hash.slice(2) || "overview").split("?");
   return { parts: path.split("/").map(decodeURIComponent), q: Object.fromEntries(new URLSearchParams(query || "")) };
@@ -246,9 +263,12 @@ async function render() {
   stopViewer();
   root.className = "";
   paintNav(parts[0]);
+  const title = (NAV.find(([k]) => k === parts[0]) || [0, parts[0] === "video" ? "Viewer" : "Overview"])[1];
+  document.title = title + " · vidlabel";
+  const ann = $("#announce"); if (ann) ann.textContent = title;
   if (!S.session.has_dataset) return pageSetup(main);
   try {
-    const pages = { overview: pageOverview, browse: pageBrowse, video: pageViewer, labels: pageLabels, views: pageViews, review: pageReview, proposals: pageProposals, validation: pageValidation, releases: pageReleases, history: pageHistory };
+    const pages = { overview: pageOverview, browse: pageBrowse, video: pageViewer, labels: pageLabels, views: pageViews, review: pageReview, proposals: pageProposals, validation: pageValidation, releases: pageReleases, inspector: pageInspector, history: pageHistory };
     await (pages[parts[0]] || pageOverview)(main, parts, q, () => mine === renderToken);
   } catch (e) { main.replaceChildren(h("div", { class: "page" }, h("div", { class: "notice bad" }, e.message))); }
 }
@@ -336,7 +356,7 @@ function checkResult(r) {
     r.seek ? h("p", { class: r.seek.exact ? "" : "notice warn" }, r.seek.exact ? `Random access is exact at ${r.seek.positions} test positions.` : `Random access returned different pictures at ${r.seek.mismatches.length} positions; read in order instead, or index the video.`) : null);
 }
 function checkDialog(v) {
-  const hash = h("input", { type: "checkbox" }), seek = h("input", { type: "checkbox" }), out = h("div"), path = h("input", { type: "text", placeholder: "leave empty to use the recorded location" });
+  const hash = h("input", { type: "checkbox" }), seek = h("input", { type: "checkbox" }), out = h("div"), path = h("input", { type: "text", "aria-label": "Path to the video file to check", placeholder: "leave empty to use the recorded location" });
   const run = async (btn) => {
     btn.disabled = true; const pb = progressBox(); out.replaceChildren(pb);
     const r = await runJob("check-video", { video_id: v.video_id, hash: hash.checked, seek: seek.checked, video_path: path.value.trim() || null }, pb.update);
@@ -352,7 +372,7 @@ async function pageBrowse(main) {
   await refreshInfo();
   const { videos } = await GET("/api/videos");
   const { roots } = await GET("/api/roots");
-  const path = h("input", { type: "text", placeholder: "path to a video file" }), vid = h("input", { type: "text", placeholder: "name (default: the file name)" });
+  const path = h("input", { type: "text", "aria-label": "Path to the video file", placeholder: "path to a video file" }), vid = h("input", { type: "text", "aria-label": "Name for the video", placeholder: "name (default: the file name)" });
   const hash = h("input", { type: "checkbox", checked: true }), index = h("input", { type: "checkbox", checked: true }), pbox = h("div");
   const add = async (btn) => {
     if (!path.value.trim()) { toast("Choose a video file first.", true); return; }
@@ -372,7 +392,7 @@ async function pageBrowse(main) {
       vid, h("div", { class: "row", style: "margin:8px 0" }, h("label", { class: "row tight" }, hash, "Fingerprint the file"), h("label", { class: "row tight" }, index, "Read keyframes and timestamps")),
       h("button", { class: "primary", onclick: e => add(e.target) }, "Add video"), pbox),
     h("div", { class: "card" }, h("h2", {}, `${videos.length} video${videos.length === 1 ? "" : "s"}`),
-      videos.length ? h("table", {}, h("thead", {}, h("tr", {}, ["Video", "Size", "fps", "Frames", "File", "Index", "Fingerprint", ""].map(t => h("th", {}, t)))),
+      videos.length ? h("table", {}, h("thead", {}, h("tr", {}, ["Video", "Size", "fps", "Frames", "File", "Index", "Fingerprint", ""].map(hth))),
         h("tbody", {}, videos.map(v => h("tr", {}, h("td", {}, h("a", { href: "#/video/" + encodeURIComponent(v.video_id) }, v.video_id)), h("td", {}, `${v.width}×${v.height}`),
           h("td", {}, +Number(v.fps).toFixed(3) + (v.is_vfr ? " variable" : "")), h("td", {}, fmt(v.frame_count)), h("td", {}, v.file_found ? tag("found", "ok") : tag("not found", "warn")),
           h("td", {}, v.has_index ? tag("yes", "ok") : tag("no", "warn")), h("td", {}, v.has_hash ? tag("yes", "ok") : tag("no", "warn")),
@@ -385,8 +405,8 @@ async function pageBrowse(main) {
   S.flash = null;
 }
 function cacheCard() {
-  const fmtSel = h("select", {}, ["jpg", "png"].map(f => h("option", { value: f }, f))), q = h("input", { type: "number", value: 95, min: 1, max: 100, style: "width:80px" }),
-    frames = h("select", {}, [["annotated", "only frames with annotations"], ["all", "every frame"]].map(([v, t]) => h("option", { value: v }, t))), out = h("div");
+  const fmtSel = h("select", { "aria-label": "Picture format" }, ["jpg", "png"].map(f => h("option", { value: f }, f))), q = h("input", { type: "number", "aria-label": "Quality, 1 to 100", value: 95, min: 1, max: 100, style: "width:80px" }),
+    frames = h("select", { "aria-label": "Which frames" }, [["annotated", "only frames with annotations"], ["all", "every frame"]].map(([v, t]) => h("option", { value: v }, t))), out = h("div");
   return h("details", { class: "card quiet" }, h("summary", { style: "cursor:pointer;font-weight:700" }, "Frame cache"),
     h("p", { class: "muted" }, "Optional. Saves decoded frames as pictures so training does not decode video again. It can be rebuilt at any time."),
     h("div", { class: "row" }, "Save", frames, "as", fmtSel, "quality", q, h("button", { onclick: async e => {
@@ -399,7 +419,7 @@ function cacheCard() {
 /* ---------- labels ---------- */
 async function pageLabels(main) {
   const { labels } = await GET("/api/labels");
-  const input = h("input", { type: "text", placeholder: "new labels, separated by commas" });
+  const input = h("input", { type: "text", "aria-label": "New labels, separated by commas", placeholder: "new labels, separated by commas" });
   const add = async () => { if (!input.value.trim()) return; if (await attempt(() => POST("/api/labels", { names: [input.value] }), "Labels added")) { await refreshInfo(); render(); } };
   input.addEventListener("keydown", e => { if (e.key === "Enter") add(); });
   main.replaceChildren(h("div", { class: "page" }, h("h1", {}, "Labels"),
@@ -413,7 +433,7 @@ async function pageLabels(main) {
 function regionText(v) { return v.region ? `${v.region.x},${v.region.y}  ${v.region.width}×${v.region.height}` : "whole frame"; }
 function framesText(v) { return (v.frame_ranges || (v.frame_range ? [v.frame_range] : [])).map(r => r.join("–")).join(", ") || "all"; }
 function deriveDialog(v) {
-  const labels = h("select", { multiple: true, size: Math.min(6, Math.max(2, S.info.labels.length)) }, S.info.labels.map(l => h("option", { value: l.name }, l.name)));
+  const labels = h("select", { multiple: true, "aria-label": "Labels to copy (none selected: all)", size: Math.min(6, Math.max(2, S.info.labels.length)) }, S.info.labels.map(l => h("option", { value: l.name }, l.name)));
   const out = h("div");
   const call = async (dry) => {
     const sel = [...labels.selectedOptions].map(o => o.value);
@@ -432,17 +452,17 @@ async function pageViews(main) {
   const videos = S.info.videos;
   main.replaceChildren(h("div", { class: "page" }, h("h1", {}, "Views"),
     h("p", { class: "muted" }, "A view is a named crop and set of time windows on one video, such as a camera region or the winter frames. No new video is made; annotations stay in the full frame's coordinates."),
-    h("div", { class: "card" }, views.length ? h("table", {}, h("thead", {}, h("tr", {}, ["View", "Video", "Region", "Resized to", "Frames", "Labels", ""].map(t => h("th", {}, t)))),
+    h("div", { class: "card" }, views.length ? h("table", {}, h("thead", {}, h("tr", {}, ["View", "Video", "Region", "Resized to", "Frames", "Labels", ""].map(hth))),
       h("tbody", {}, views.map(v => h("tr", {}, h("td", {}, h("a", { href: `#/video/${encodeURIComponent(v.video_id)}?view=${encodeURIComponent(v.view_id)}` }, v.view_id)), h("td", {}, v.video_id), h("td", { class: "mono" }, regionText(v)),
         h("td", { class: "mono" }, v.output_size ? v.output_size.join("×") : "–"), h("td", { class: "mono" }, framesText(v)), h("td", {}, (v.allowed_labels || ["any"]).join(", ")),
         h("td", { class: "right" }, h("button", { class: "small", onclick: () => deriveDialog(v) }, "Copy labels in…")))))) : h("div", { class: "empty" }, videos.length ? "No views yet. Create one below." : "Add a video first, then define views on it."),
     ), videos.length ? viewForm(videos) : null));
 }
 function viewForm(videos) {
-  const f = { vid: h("select", {}, videos.map(v => h("option", { value: v }, v))), id: h("input", { type: "text", placeholder: "view name, e.g. left_camera" }),
-    x: h("input", { type: "number", min: 0, style: "width:84px" }), y: h("input", { type: "number", min: 0, style: "width:84px" }), w: h("input", { type: "number", min: 1, style: "width:84px" }), hh: h("input", { type: "number", min: 1, style: "width:84px" }),
-    ow: h("input", { type: "number", min: 1, style: "width:84px" }), oh: h("input", { type: "number", min: 1, style: "width:84px" }), frames: h("input", { type: "text", placeholder: "e.g. 0-499, 1200-1500 (empty: all frames)" }) };
-  const wrap = h("div", { class: "crop-wrap" }), cv = h("canvas"), allowed = h("select", { multiple: true, size: 4 }, S.info.labels.map(l => h("option", { value: l.name }, l.name)));
+  const f = { vid: h("select", { "aria-label": "Video" }, videos.map(v => h("option", { value: v }, v))), id: h("input", { type: "text", "aria-label": "View name", placeholder: "view name, e.g. left_camera" }),
+    x: h("input", { type: "number", "aria-label": "Region left (x)", min: 0, style: "width:84px" }), y: h("input", { type: "number", "aria-label": "Region top (y)", min: 0, style: "width:84px" }), w: h("input", { type: "number", "aria-label": "Region width", min: 1, style: "width:84px" }), hh: h("input", { type: "number", "aria-label": "Region height", min: 1, style: "width:84px" }),
+    ow: h("input", { type: "number", "aria-label": "Output width", min: 1, style: "width:84px" }), oh: h("input", { type: "number", "aria-label": "Output height", min: 1, style: "width:84px" }), frames: h("input", { type: "text", "aria-label": "Frame ranges", placeholder: "e.g. 0-499, 1200-1500 (empty: all frames)" }) };
+  const wrap = h("div", { class: "crop-wrap" }), cv = h("canvas"), allowed = h("select", { multiple: true, "aria-label": "Allowed labels (none selected: all)", size: 4 }, S.info.labels.map(l => h("option", { value: l.name }, l.name)));
   let img = null, drag = null;
   const rect = () => { const x = +f.x.value, y = +f.y.value, w = +f.w.value, hh = +f.hh.value; return w > 0 && hh > 0 ? { x, y, w, hh } : null; };
   const paint = () => {
@@ -508,18 +528,18 @@ async function pageReview(main, parts, q, alive) {
       toast(`${ids.length} track${ids.length > 1 ? "s" : ""} marked ${status} (in your draft)`);
       st.sel.clear(); await reload();
     };
-    const all = h("input", { type: "checkbox", onchange: e => { rows.forEach(t => e.target.checked ? st.sel.add(t.track_id) : st.sel.delete(t.track_id)); paint(); } });
+    const all = h("input", { type: "checkbox", "aria-label": "Select all the tracks shown", onchange: e => { rows.forEach(t => e.target.checked ? st.sel.add(t.track_id) : st.sel.delete(t.track_id)); paint(); } });
     holder.replaceChildren(
       h("div", { class: "row", style: "margin-bottom:8px" }, h("span", { class: "muted" }, `${rows.length} of ${tracks.length} tracks`), h("span", { class: "spacer" }),
         h("span", { class: "muted" }, `${st.sel.size} selected`),
         h("button", { class: "ok", disabled: !st.sel.size, onclick: () => act([...st.sel], "approved") }, "Approve selected"),
         h("button", { class: "bad", disabled: !st.sel.size, onclick: () => act([...st.sel], "rejected") }, "Reject selected"),
         h("button", { disabled: !st.sel.size, onclick: () => act([...st.sel], "unreviewed") }, "Reset selected")),
-      rows.length ? h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, all), h("th", {}, ""), h("th", {}, "Track"), h("th", {}, "Label"), h("th", {}, "Frames"), h("th", { class: "num" }, "Rows"),
-        h("th", { class: "num" }, "Confidence"), h("th", {}, "Status"), h("th", {}, "Origin"), h("th", {}, ""))),
+      rows.length ? h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, all), h("th", {}, h("span", { class: "sr" }, "Preview")), h("th", {}, "Track"), h("th", {}, "Label"), h("th", {}, "Frames"), h("th", { class: "num" }, "Rows"),
+        h("th", { class: "num" }, "Confidence"), h("th", {}, "Status"), h("th", {}, "Origin"), h("th", {}, h("span", { class: "sr" }, "Actions")))),
         h("tbody", {}, rows.map(t => {
           const mid = Math.round((t.first_frame + t.last_frame) / 2);
-          return h("tr", {}, h("td", {}, h("input", { type: "checkbox", checked: st.sel.has(t.track_id), onchange: e => { e.target.checked ? st.sel.add(t.track_id) : st.sel.delete(t.track_id); paint(); } })),
+          return h("tr", {}, h("td", {}, h("input", { type: "checkbox", "aria-label": `Select track ${t.track_id}`, checked: st.sel.has(t.track_id), onchange: e => { e.target.checked ? st.sel.add(t.track_id) : st.sel.delete(t.track_id); paint(); } })),
             h("td", {}, h("img", { class: "thumb", loading: "lazy", alt: "", src: `/api/frame/${encodeURIComponent(vid)}/${mid}?max_side=160` + (view ? "&view_id=" + encodeURIComponent(view) : ""), onerror: e => { e.target.style.visibility = "hidden"; } })),
             h("td", {}, h("a", { href: `#/video/${encodeURIComponent(vid)}?f=${t.first_frame}` + (view ? "&view=" + encodeURIComponent(view) : "") }, "#" + t.track_id), t.pending ? [" ", tag("changed", "pending")] : null),
             h("td", {}, t.labels.map(l => h("span", {}, dot(l), l, " "))), h("td", { class: "mono" }, `${t.first_frame}–${t.last_frame}`), h("td", { class: "num" }, fmt(t.n_rows)),
@@ -533,11 +553,11 @@ async function pageReview(main, parts, q, alive) {
   main.replaceChildren(h("div", { class: "page" }, h("h1", {}, "Review tracks"),
     h("p", { class: "muted" }, "Approve or reject whole tracks. Nothing is written to the dataset until you commit from ", h("b", {}, "Changes"), "."),
     h("div", { class: "card" }, h("div", { class: "row", style: "margin-bottom:10px" },
-      h("select", { onchange: e => go("review/" + encodeURIComponent(e.target.value)) }, vids.map(v => h("option", { value: v, selected: v === vid }, v))),
-      viewIds.length ? h("select", { onchange: e => go("review/" + encodeURIComponent(vid), { view: e.target.value }) }, h("option", { value: "" }, "Whole frame"), viewIds.map(v => h("option", { value: v, selected: v === view }, "View: " + v))) : null,
-      h("select", { onchange: e => { st.status = e.target.value; paint(); } }, h("option", { value: "" }, "Any status"), ["unreviewed", "approved", "rejected"].map(s => h("option", { value: s, selected: s === st.status }, s))),
-      h("select", { onchange: e => { st.label = e.target.value; paint(); } }, h("option", { value: "" }, "Any label"), labels.map(l => h("option", { value: l, selected: l === st.label }, l))),
-      h("select", { onchange: e => { st.sort = e.target.value; paint(); } }, [["id", "Sort: track id"], ["conf", "Sort: lowest confidence first"], ["len", "Sort: longest first"]].map(([v, t]) => h("option", { value: v, selected: v === st.sort }, t)))),
+      h("select", { "aria-label": "Video", onchange: e => go("review/" + encodeURIComponent(e.target.value)) }, vids.map(v => h("option", { value: v, selected: v === vid }, v))),
+      viewIds.length ? h("select", { "aria-label": "View", onchange: e => go("review/" + encodeURIComponent(vid), { view: e.target.value }) }, h("option", { value: "" }, "Whole frame"), viewIds.map(v => h("option", { value: v, selected: v === view }, "View: " + v))) : null,
+      h("select", { "aria-label": "Status", onchange: e => { st.status = e.target.value; paint(); } }, h("option", { value: "" }, "Any status"), ["unreviewed", "approved", "rejected"].map(s => h("option", { value: s, selected: s === st.status }, s))),
+      h("select", { "aria-label": "Label", onchange: e => { st.label = e.target.value; paint(); } }, h("option", { value: "" }, "Any label"), labels.map(l => h("option", { value: l, selected: l === st.label }, l))),
+      h("select", { "aria-label": "Sort", onchange: e => { st.sort = e.target.value; paint(); } }, [["id", "Sort: track id"], ["conf", "Sort: lowest confidence first"], ["len", "Sort: longest first"]].map(([v, t]) => h("option", { value: v, selected: v === st.sort }, t)))),
       holder)));
   paint();
 }
@@ -545,7 +565,7 @@ async function pageReview(main, parts, q, alive) {
 /* ---------- validation ---------- */
 function issueTable(issues) {
   if (!issues.length) return h("div", { class: "notice" }, "No problems found.");
-  return h("table", {}, h("thead", {}, h("tr", {}, ["Level", "Code", "Message", "Count"].map(t => h("th", {}, t)))),
+  return h("table", {}, h("thead", {}, h("tr", {}, ["Level", "Code", "Message", "Count"].map(hth))),
     h("tbody", {}, issues.map(i => h("tr", {}, h("td", {}, tag(i.level, i.level)), h("td", { class: "mono" }, i.code), h("td", {}, i.message), h("td", { class: "num" }, i.count ?? "")))));
 }
 async function pageValidation(main) {
@@ -573,10 +593,9 @@ async function pageReleases(main) {
     pbox.replaceChildren(); btn.disabled = false;
     if (r) { S.flash = [h("div", { class: "notice" }, `Built ${r.release_id}: ${fmt(r.n_rows)} rows.`), r.notes.map(n => h("div", { class: "notice warn" }, n))]; await refreshInfo(); render(); }
   };
-  const sample = sampleCard(releases);
   main.replaceChildren(h("div", { class: "page" }, h("h1", {}, "Releases"),
     h("p", { class: "muted" }, "A release is a frozen, checked copy of the annotations for training. Its id is a fingerprint of its files, so the same data always gives the same id."),
-    h("div", { class: "card" }, releases.length ? h("table", {}, h("thead", {}, h("tr", {}, ["Release", "Created", "Rows", "Videos", "Statuses", ""].map(t => h("th", {}, t)))),
+    h("div", { class: "card" }, releases.length ? h("table", {}, h("thead", {}, h("tr", {}, ["Release", "Created", "Rows", "Videos", "Statuses", ""].map(hth))),
       h("tbody", {}, releases.map(r => h("tr", {}, h("td", { class: "mono" }, r.release_id), h("td", {}, (r.created_at || "").replace("T", " ").slice(0, 19)), h("td", { class: "num" }, fmt(r.n_rows)),
         h("td", { class: "num" }, fmt(r.n_videos)), h("td", {}, ((r.extra || {}).statuses || []).join(", ")), h("td", {}, r.is_latest ? tag("latest", "ok") : null)))))
       : h("div", { class: "empty" }, "No releases yet.")),
@@ -584,19 +603,56 @@ async function pageReleases(main) {
       h("div", { class: "row" }, "Include rows that are:", Object.keys(stat).map(k => h("label", { class: "row tight" }, h("input", { type: "checkbox", checked: stat[k], onchange: e => { stat[k] = e.target.checked; } }), k))),
       h("p", { class: "muted" }, "Rows you have only drafted (not committed) are not included. Including rejected rows builds a release that is not made ‘latest’."),
       h("button", { class: "primary", onclick: e => build(e.target) }, "Build release"), pbox, out),
-    sample));
+    h("p", {}, h("a", { href: "#/inspector" }, "Inspect what a training sample contains →"))));
 }
-function sampleCard(releases) {
-  const out = h("div"), frame = h("input", { type: "number", value: 0, min: 0, style: "width:90px" });
-  const vsel = h("select", {}, (S.info.videos).map(v => h("option", { value: v }, v)));
-  return h("div", { class: "card" }, h("h2", {}, "Inspect a training sample"),
-    h("p", { class: "muted" }, "What a training loader would return for one frame: the targets, not the pixels."),
-    h("div", { class: "row" }, vsel, "frame", frame, h("button", { onclick: async () => {
-      const r = await attempt(() => GET("/api/sample", { video_id: vsel.value, frame: frame.value, release: releases.length ? "latest" : "none", kind: ["box", "mask"] }));
-      if (!r) return;
-      out.replaceChildren(h("div", { class: "muted" }, `image size ${r.image_size.join("×")} · classes: ${r.class_names.join(", ")} · ${r.in_samples ? "this frame is in the training set" : "this frame is not in the training set (no annotations on it)"}`),
-        h("table", {}, h("tbody", {}, Object.entries(r.targets).map(([k, t]) => h("tr", {}, h("td", { class: "mono" }, k), h("td", { class: "mono" }, "shape " + JSON.stringify(t.shape)), h("td", { class: "mono" }, t.values ? JSON.stringify(t.values) : "(large)"))))));
-    } }, "Inspect")), out);
+/* ---------- sample inspector ---------- */
+async function pageInspector(main, parts, q, alive) {
+  const info = S.info, videos = info.videos;
+  if (!videos.length) { main.replaceChildren(h("div", { class: "page" }, h("h1", {}, "Sample inspector"), h("div", { class: "card empty" }, "Add a video first."))); return; }
+  const [{ views }, { releases }] = await Promise.all([GET("/api/views"), GET("/api/releases")]);
+  if (!alive()) return;
+  const P = { video: videos.includes(q.video) ? q.video : videos[0], f: Math.max(0, +q.f || 0), view: q.view || "", release: q.release || (releases.length ? "latest" : "none"),
+              kinds: (q.kinds || "box,mask").split(",").filter(Boolean), fmt: q.fmt || "xyxy", norm: q.norm === "1", off: +q.off || 0 };
+  const set = (patch) => go("inspector", Object.fromEntries(Object.entries({ ...P, ...patch, kinds: (patch.kinds || P.kinds).join(","), norm: (("norm" in patch) ? patch.norm : P.norm) ? "1" : "" }).filter(([, v]) => v !== "" && v != null && v !== 0 && v !== false)));
+  const myViews = views.filter(v => v.video_id === P.video);
+  const out = h("div");
+  main.replaceChildren(h("div", { class: "page wide" }, h("h1", {}, "Sample inspector"),
+    h("p", { class: "muted" }, "What a training loader would build for one frame, with the settings you choose: the picture of the sample, and the targets drawn on it. Release “current annotations” reads the dataset as it is now, without a release."),
+    h("div", { class: "card quiet" }, h("div", { class: "row" },
+      h("label", { class: "row tight" }, "Video", h("select", { onchange: e => set({ video: e.target.value, view: "", f: 0 }) }, videos.map(v => h("option", { value: v, selected: v === P.video }, v)))),
+      h("label", { class: "row tight" }, "View", h("select", { onchange: e => set({ view: e.target.value }) }, h("option", { value: "" }, "Whole frame"), myViews.map(v => h("option", { value: v.view_id, selected: v.view_id === P.view }, v.view_id)))),
+      h("label", { class: "row tight" }, "Release", h("select", { onchange: e => set({ release: e.target.value }) }, h("option", { value: "latest", selected: P.release === "latest", disabled: !releases.length }, "latest"), h("option", { value: "none", selected: P.release === "none" }, "current annotations"),
+        releases.map(r => h("option", { value: r.release_id, selected: P.release === r.release_id }, r.release_id)))),
+      ["box", "mask"].map(k => h("label", { class: "row tight" }, h("input", { type: "checkbox", checked: P.kinds.includes(k), onchange: e => set({ kinds: ["box", "mask"].filter(x => x === k ? e.target.checked : P.kinds.includes(x)) }) }), k + "es".slice(k === "box" ? 0 : 1))),
+      h("label", { class: "row tight" }, "Box format", h("select", { onchange: e => set({ fmt: e.target.value }) }, ["xyxy", "xywh", "cxcywh"].map(f => h("option", { value: f, selected: f === P.fmt }, f)))),
+      h("label", { class: "row tight" }, h("input", { type: "checkbox", checked: P.norm, onchange: e => set({ norm: e.target.checked }) }), "fractions"),
+      h("label", { class: "row tight" }, "Label offset", h("input", { type: "number", min: 0, value: P.off, style: "width:60px", onchange: e => set({ off: +e.target.value || 0 }) })))),
+    out));
+  const r = await attempt(() => GET("/api/sample", { video_id: P.video, frame: P.f, release: P.release, view_id: P.view, kind: P.kinds, box_format: P.fmt, normalized: P.norm ? "1" : "", label_offset: P.off }));
+  if (!alive()) return;
+  if (!r) return;
+  const [W, H] = r.image_size, pc = (v, t) => (100 * v / t) + "%";
+  const frameIn = h("input", { type: "number", min: 0, value: P.f, "aria-label": "Frame number", style: "width:90px", onchange: e => set({ f: Math.max(0, +e.target.value || 0) }) });
+  const objs = r.objects;
+  const pic = h("div", { class: "inspect-pic", style: `aspect-ratio:${W}/${H}`, role: "img", "aria-label": `Frame ${P.f} of ${P.video} with ${objs.length} target${objs.length === 1 ? "" : "s"} drawn on it` },
+    h("img", { src: `/api/frame/${encodeURIComponent(P.video)}/${P.f}?` + new URLSearchParams(P.view ? { view_id: P.view } : {}), alt: "", onerror: e => { e.target.remove(); } }),
+    r.mask_pngs.map(m => { const o = objs[m.index], col = labelColor(o ? o.class_name || "" : ""); return h("div", { class: "imask", style: `left:${pc(m.x, W)};top:${pc(m.y, H)};width:${pc(m.w, W)};height:${pc(m.h, H)};background:${col};-webkit-mask-image:url(${m.png});mask-image:url(${m.png});-webkit-mask-size:100% 100%;mask-size:100% 100%` }); }),
+    objs.map(o => { const [x0, y0, x1, y1] = o.box, col = labelColor(o.class_name || ""); return h("div", { class: "ibox", style: `left:${pc(x0, W)};top:${pc(y0, H)};width:${pc(x1 - x0, W)};height:${pc(y1 - y0, H)};border-color:${col}` }, h("span", { style: `background:${col}` }, `${o.class_id}${o.class_name ? " " + o.class_name : ""}`)); }));
+  out.replaceChildren(
+    h("div", { class: "row", style: "margin:4px 0 12px" },
+      h("button", { disabled: r.previous_sample == null, onclick: () => set({ f: r.previous_sample }) }, "◀ Previous sample"),
+      h("button", { disabled: P.f <= 0, "aria-label": "Previous frame", onclick: () => set({ f: P.f - 1 }) }, "◀"), h("label", { class: "row tight" }, "Frame", frameIn), h("span", { class: "muted" }, `of ${fmt(r.frame_count)}`),
+      h("button", { "aria-label": "Next frame", disabled: P.f >= r.frame_count - 1, onclick: () => set({ f: P.f + 1 }) }, "▶"),
+      h("button", { disabled: r.next_sample == null, onclick: () => set({ f: r.next_sample }) }, "Next sample ▶"),
+      r.in_samples ? tag("in the training set", "ok") : tag("not in the training set", "warn"),
+      h("span", { class: "muted" }, `${fmt(r.n_samples_in_video)} sample${r.n_samples_in_video === 1 ? "" : "s"} in this video · image ${W}×${H} · ${r.describe.n_samples} in all`)),
+    h("div", { class: "inspect" }, h("div", {}, pic),
+      h("div", {}, h("h2", {}, `${objs.length} target${objs.length === 1 ? "" : "s"}`),
+        objs.length ? h("table", {}, h("thead", {}, h("tr", {}, ["#", "Class", "Track", "Box (" + P.fmt + (P.norm ? ", fractions" : ", px") + ")"].map(hth))),
+          h("tbody", {}, objs.map(o => h("tr", {}, h("td", {}, o.index), h("td", {}, dot(o.class_name || ""), " ", `${o.class_id} ${o.class_name || ""}`), h("td", {}, o.track_id ?? ""), h("td", { class: "mono" }, o.target_box.map(v => +v.toFixed(P.norm ? 4 : 1)).join(", "))))))
+          : h("div", { class: "empty" }, r.in_samples ? "This sample has no targets of the chosen kinds." : "No annotations on this frame, so a loader would not use it."),
+        h("details", {}, h("summary", {}, "Raw targets"), h("table", {}, h("tbody", {}, Object.entries(r.targets).map(([k, t]) => h("tr", {}, h("td", { class: "mono" }, k), h("td", { class: "mono" }, "shape " + JSON.stringify(t.shape)), h("td", { class: "mono" }, t.values ? JSON.stringify(t.values) : "(large)")))))),
+        h("details", {}, h("summary", {}, "Settings used"), h("pre", { class: "mono" }, JSON.stringify(r.describe, null, 2))))));
 }
 
 /* ---------- proposals from agents ---------- */
@@ -622,7 +678,7 @@ async function pageProposals(main, parts, q, alive) {
       h("div", { class: "row tight", style: "margin:8px 0" }, Object.entries(p.by_video).map(([v, n]) => h("span", { class: "row tight" },
         h("a", { href: "#/video/" + encodeURIComponent(v) }, v), h("span", { class: "muted" }, fmt(n)), h("button", { class: "small", onclick: () => take(p, v) }, "Take"), h("button", { class: "small", onclick: () => drop(p, v) }, "Throw away")))),
       p.other_edits ? h("p", { class: "muted" }, `${p.other_edits} other edit(s) in this draft cannot be taken over.`) : null,
-      h("table", {}, h("thead", {}, h("tr", {}, ["Video", "Kind", "Label", "Frames", "Track", "Confidence", "Note"].map(t => h("th", {}, t)))),
+      h("table", {}, h("thead", {}, h("tr", {}, ["Video", "Kind", "Label", "Frames", "Track", "Confidence", "Note"].map(hth))),
         h("tbody", {}, p.rows.map(r => h("tr", {}, h("td", {}, r.video_id), h("td", {}, tag(r.kind, "tag")), h("td", {}, dot(r.label), " ", r.label),
           h("td", { class: "mono" }, r.kind === "marker" ? `${r.start_frame}–${r.end_frame}` : r.start_frame), h("td", {}, r.track_id ?? ""), h("td", {}, r.confidence != null ? pct(r.confidence) : ""), h("td", { class: "muted" }, r.note || ""))))),
       p.adds > p.rows.length ? h("p", { class: "muted" }, `Showing the first ${p.rows.length} of ${fmt(p.adds)}.`) : null))
@@ -634,7 +690,7 @@ async function pageHistory(main) {
   const { commits } = await GET("/api/history");
   main.replaceChildren(h("div", { class: "page" }, h("h1", {}, "History"),
     h("p", { class: "muted" }, "Every commit made through this interface. Reverting makes a new commit that puts things back, so nothing is lost. The last 50 are kept."),
-    h("div", { class: "card" }, commits.length ? h("table", {}, h("thead", {}, h("tr", {}, ["#", "When", "Who", "Message", "Added", "Changed", "Deleted", ""].map(t => h("th", {}, t)))),
+    h("div", { class: "card" }, commits.length ? h("table", {}, h("thead", {}, h("tr", {}, ["#", "When", "Who", "Message", "Added", "Changed", "Deleted", ""].map(hth))),
       h("tbody", {}, commits.map(c => h("tr", {}, h("td", {}, c.seq), h("td", {}, (c.time || "").replace("T", " ").slice(0, 16)), h("td", {}, c.author),
         h("td", {}, c.kind === "revert" ? tag("revert", "warn") : null, " ", c.message, (c.skipped || []).length ? h("div", { class: "muted" }, `${c.skipped.length} row(s) were left alone because they changed since`) : null),
         h("td", { class: "num" }, fmt(c.summary.added)), h("td", { class: "num" }, fmt(c.summary.modified)), h("td", { class: "num" }, fmt(c.summary.deleted)),
@@ -650,6 +706,7 @@ async function boot2() {
 }
 async function boot() {
   S.author = localStorage.getItem("vl_author") || "";
+  $(".skip").addEventListener("click", e => { e.preventDefault(); $("#main").focus(); });       // not a real link: the address bar is the router
   $("#changes-btn").addEventListener("click", toggleDrawer);
   $("#commit-btn").addEventListener("click", () => setDrawer(true));
   $("#undo-btn").addEventListener("click", () => draftOp("/api/draft/undo").then(() => render()));
@@ -664,10 +721,10 @@ async function boot() {
 }
 function askAuthor(cancelable) {
   return new Promise(res => {
-    const inp = h("input", { type: "text", value: S.author, placeholder: "your name", maxlength: 64 });
+    const inp = h("input", { type: "text", "aria-label": "Your name", value: S.author, placeholder: "your name", maxlength: 64 });
     const save = () => { const v = inp.value.trim(); if (!v) { toast("Please enter a name.", true); return false; } S.author = v; try { localStorage.setItem("vl_author", v); } catch (e) { /* private mode */ } $("#author-btn").textContent = "👤 " + v; res(); if (S.session && S.session.has_dataset) refreshDraft().then(render); };
     modal("Who is editing?", h("div", {}, h("p", { class: "muted" }, "Your name is saved with the changes you commit, and each person keeps their own draft. There are no accounts or passwords."), inp),
-      cancelable ? [{ text: "Cancel", run: () => res() }, { text: "Save", primary: true, run: save }] : [{ text: "Continue", primary: true, run: save }]);
+      cancelable ? [{ text: "Cancel", cancel: true, run: () => res() }, { text: "Save", primary: true, run: save }] : [{ text: "Continue", primary: true, run: save }]);
     setTimeout(() => inp.focus(), 50);
   });
 }

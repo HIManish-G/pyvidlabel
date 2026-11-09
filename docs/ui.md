@@ -3,9 +3,10 @@
 `vidlabel ui` opens a web page on your own computer for looking at a dataset, reviewing what a model predicted, checking that the
 dataset is valid, and building releases. It needs no database, no Node and no internet connection.
 
-> **Status.** The interface can browse, review, draw and edit boxes, time spans and masks, validate, build releases, add and check
-> videos, manage labels and views, and commit and revert changes. Still to come are polish and an accessibility review. The plan is in
-> [Web interface design](ui-design.md).
+> **Status.** The interface can browse, review, draw and edit boxes, time spans and masks (on the whole frame and inside a view), validate,
+> build releases, inspect training samples, add and check videos, manage labels and views, take in proposals from AI agents, and commit and revert
+> changes. It has been checked for contrast and screen-reader names with an automated tool, but not with people who use assistive technology
+> ([Accessibility](#accessibility)). The plan is in [Web interface design](ui-design.md).
 
 ## Start it
 
@@ -58,7 +59,8 @@ is unaffected, but drafts and history are lost.
 | Viewer (click a video) | frame-accurate frames read by the library, boxes and masks drawn over them, a timeline of annotation density and markers, a list of what is on the frame with Approve, Reject and Delete, and the drawing tools (below) |
 | Review | the tracks of one video with a thumbnail, confidence, status and origin; filter, sort by lowest confidence, approve, reject or delete one track or many at once |
 | Validation | the quick check at once; the full check (decodes every mask) as a background job with a progress bar |
-| Releases | the existing releases, building a new one (choose which statuses to include), and an inspector showing the training targets for any frame |
+| Releases | the existing releases and building a new one (choose which statuses to include) |
+| Sample inspector | what a training loader would build for one frame: the picture with the targets drawn on it, a table of them, and the raw tensors; choose the release (or the current annotations), the view, box format and label offset, and step between the frames that are in the training set |
 | Proposals | rows that [AI agents](agents.md) proposed; take them into your draft (all, or one video's) or throw them away; a badge shows how many wait |
 | History | past commits and Revert |
 
@@ -72,8 +74,12 @@ over a grey frame and says the file was not found.
 ## Drawing and editing in the viewer
 
 Open a video and use the tools above the frame. Every drawing goes into your draft (pink "pending" outline) and is written only when you commit.
-Drawing works on the whole frame, so coordinates are always the video's own pixels. Inside a view the tools are off; draw on the whole frame
-and use **Copy labels in** on the Views page.
+On the whole frame, coordinates are the video's own pixels. Choose a **View** above the picture and the tools work there too: you see and draw on the
+view's crop, what you draw belongs to that view (`view_id`), and the interface converts it to the video's own pixels, which is how the dataset
+always stores it. Only the rows of that view are shown; rows drawn on the whole frame do not appear in it (use **Copy labels in** on the Views page
+to bring them). A view's label list and frame ranges are respected: the label picker offers only the view's labels, and a frame outside its
+ranges is refused with a message. A box that reaches outside the view can only be edited on the whole frame, and a mask in a view that is
+resized (it has an `output_size`) can be drawn but not edited there, because editing at the smaller size would lose detail.
 
 | tool (key) | what it does |
 |---|---|
@@ -91,6 +97,10 @@ its box follows the new shape. New rows are marked as made by a person (`origin`
 Masks: **Alt**-drag erases with the brush, **Shift**-click draws a straight line from the last point, `[` and `]` change the size, a slider sets
 the opacity, and Undo and Redo step through strokes. A mask in progress belongs to the frame it was started on; if you move away the panel
 offers to go back, and it can only be saved onto that frame. Polygon corners can be dragged before the shape is closed.
+
+**Without a pointer.** With the Box tool, **Add a box by numbers** takes left, top, right and bottom (in the picture's pixels) and adds the box at
+the current frame; a selected box has the same four fields and **Apply box**. With the Span tool, **Label frames by numbers** takes a first and
+last frame. Masks need a pointer.
 
 Keys: `,` and `.` jump to the previous or next frame where a span or track starts or ends; **C** copies the selected box to the next frame (same label and track) and moves there, so pressing it again follows an object along; it refuses if that track already has a box on the next frame (pressing it several times quickly makes one copy per frame). ← → step a frame, Shift 10 frames, Space plays, Home and End, Delete removes the selected row, Esc cancels a polygon or drag, Ctrl+Z and
 Ctrl+Y undo and redo your draft (or your mask strokes while a mask is open).
@@ -123,6 +133,18 @@ refuses all file picking, so people cannot browse your disk. One server is the o
 command-line edit) on the same dataset at once. A dataset on a mounted network drive works, since the server reads it by path.
 
 See [Security](security.md) for what the token, host and origin checks do and do not protect against.
+
+## Accessibility
+
+The interface has a light and a dark theme that follow the system, text colours that reach at least 4.5 to 1 on every surface in both, visible focus
+rings, names for every control and table column, one heading per page, dialogs that keep the keyboard inside them, close on Esc and give focus back,
+messages announced to screen readers (errors as alerts), a skip link, the page name announced when you move between pages, and no animation when the
+system asks for reduced motion. The timeline is a slider: focus it and use the arrow keys (Shift for 10 frames). Automated checks run in the
+tests (the colours, the structure, and with `axe-core` installed, every page and tool state against WCAG 2.2 AA).
+
+What that does **not** show: how it feels with a screen reader or switch device, or at 200% zoom on a small screen. Drawing masks needs a
+pointer, and the picture itself has no text description other than the list of what is on the frame in the side panel. Please report what gets in
+your way.
 
 ## Troubleshooting
 

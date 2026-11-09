@@ -9,6 +9,8 @@
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+<a class="skip" href="#main">Skip to the page</a>
+<div id="announce" class="sr" role="status" aria-live="polite"></div>
 <aside id="rail">
   <a class="brand" href="#/overview">vidlabel</a>
   <div class="ruler" aria-hidden="true"></div>
@@ -16,17 +18,17 @@
   <div class="spacer"></div>
   <button id="author-btn" class="linkish" title="Your name is saved with the changes you commit"></button>
 </aside>
-<main id="main"></main>
+<main id="main" tabindex="-1"></main>
 <footer id="tape">
   <div id="tape-bar" aria-hidden="true"></div>
-  <button id="changes-btn" class="tape-text" aria-label="Review pending changes"><span id="tape-text">No pending changes</span> <span class="badge" id="changes-count" hidden>0</span></button>
+  <button id="changes-btn" class="tape-text" aria-expanded="false" aria-controls="drawer" title="Review pending changes"><span id="tape-text">No pending changes</span> <span class="badge" id="changes-count" hidden>0</span></button>
   <div class="spacer"></div>
   <button id="jobs-btn" class="tape-btn" hidden></button>
   <button id="undo-btn" class="tape-btn" disabled>Undo</button>
   <button id="redo-btn" class="tape-btn" disabled>Redo</button>
   <button id="commit-btn" class="tape-commit" disabled>Commit…</button>
 </footer>
-<aside id="drawer" hidden></aside>
+<aside id="drawer" hidden role="region" aria-label="Pending changes"></aside>
 <div id="toasts"></div>
 <div id="modal-root"></div>
 <script src="/static/draw.js"></script>
