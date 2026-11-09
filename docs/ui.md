@@ -5,8 +5,7 @@ dataset is valid, and building releases. It needs no database, no Node and no in
 
 > **Status.** The interface can browse, review, draw and edit boxes, time spans and masks (on the whole frame and inside a view), validate,
 > build releases, inspect training samples, add and check videos, manage labels and views, take in proposals from AI agents, and commit and revert
-> changes. It has been checked for contrast and screen-reader names with an automated tool, but not with people who use assistive technology
-> ([Accessibility](#accessibility)). The plan is in [Web interface design](ui-design.md).
+> changes. Accessibility is covered by automated checks only ([Accessibility](#accessibility)). The design is in [Web interface design](ui-design.md).
 
 ## Start it
 
@@ -142,9 +141,8 @@ messages announced to screen readers (errors as alerts), a skip link, the page n
 system asks for reduced motion. The timeline is a slider: focus it and use the arrow keys (Shift for 10 frames). Automated checks run in the
 tests (the colours, the structure, and with `axe-core` installed, every page and tool state against WCAG 2.2 AA).
 
-What that does **not** show: how it feels with a screen reader or switch device, or at 200% zoom on a small screen. Drawing masks needs a
-pointer, and the picture itself has no text description other than the list of what is on the frame in the side panel. Please report what gets in
-your way.
+Not covered by the automated checks: use with a screen reader or switch device, and at 200% zoom on a small screen. Drawing masks needs a
+pointer, and the picture itself has no text description other than the list of what is on the frame in the side panel.
 
 ## Troubleshooting
 

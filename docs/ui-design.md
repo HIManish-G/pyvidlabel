@@ -1,7 +1,6 @@
 # Design: the local web interface
 
-Status: **stages 1 to 3 are built** (server, draft and history, jobs, every route, and pages for browsing, review, validation, releases, history, videos, labels and views); stage 4 (polish) is
-planned. This page is the plan the interface is built and tested against; the user guide is [Web interface](ui.md). If the behaviour here
+Status: **all four stages are built** (see [What is built](#what-is-built)). This page describes the design the interface is built and tested against; the user guide is [Web interface](ui.md). If the behaviour here
 and the code ever disagree, one of them is a bug.
 
 ## Goal
@@ -157,10 +156,10 @@ browser. The page is a client of this interface, so a script could use it too. T
 
 ## Decisions
 
-- **Drafts are per author**, with conflicts caught at commit. (Decided.)
-- **History keeps the last 50 commits**, because reverting needs the removed rows and masks can be large. (Decided.)
+- **Drafts are per author**, with conflicts caught at commit.
+- **History keeps the last 50 commits**, because reverting needs the removed rows and masks can be large.
 - **Reverting** commits the inverse of a past commit, with the same row ids; rows changed again since are left alone and listed.
-- **Done, with limits:** accessibility. Contrast, names, headings, dialogs, announcements and a numbers-based way to add and edit boxes and spans are built and tested with axe-core. **Open:** a trial with real assistive technology, and a keyboard way to draw masks.
+- **Done, with limits:** accessibility. Contrast, names, headings, dialogs, announcements and a numbers-based way to add and edit boxes and spans are built and tested with axe-core. **Open:** a trial with assistive technology, and a keyboard way to draw masks.
 
 ## What is built
 
@@ -170,7 +169,7 @@ browser. The page is a client of this interface, so a script could use it too. T
 | 2. builder pages: Labels, Videos (add, check, index, folders for moved files, frame cache), Views (draw a region, create, copy labels in with a preview) | built |
 | 3. drawing: select, move and resize boxes, new boxes, spans on the timeline, masks with brush, eraser and polygon, editing an existing mask | built (on the whole frame and inside a view) |
 | 3b. viewer rework: single current frame, frame cache and prefetch, playback clock, new timeline (zoom, lanes, minimap, span editing), picture zoom and pan, mask editor polish | built |
-| 4. polish: sample inspector page, drawing inside a view, accessibility pass | built; the screen-by-screen guide is not written |
+| 4. polish: sample inspector page, drawing inside a view, accessibility pass | built |
 
 ## Visual identity
 

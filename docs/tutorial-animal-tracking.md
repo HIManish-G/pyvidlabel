@@ -109,7 +109,7 @@ Pin `release.release_id` in your training config. Only human-confirmed work? Bui
 
 ## 7. Targets for training
 
-`FrameSamples` turns a release into per-frame targets. Here we ask only for the box targets of approved tracks and look at one
+`FrameSamples` turns a release into per-frame targets. Here, ask only for the box targets of approved tracks and look at one
 frame without any video file; in a real run `FrameSamples` also reads the pixels (see [training](training.md)).
 
 <!-- doctest -->

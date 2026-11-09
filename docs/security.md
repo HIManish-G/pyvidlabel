@@ -15,7 +15,7 @@ leaves to you. It is not a security audit; no one outside the project has review
 
 - Video and view ids are restricted to letters, digits, `.`, `_` and `-`, and cannot be `.` or `..`, so an id cannot make the library
   read or write outside its folder. `manifest.json` entries are checked the same way (a manifest naming a path is reported as
-  `bad_manifest`, not followed). Earlier development builds accepted `.` and `..`; this was found and fixed before any release.
+  `bad_manifest`, not followed).
 - The **recorded source path of a video is only a hint**. It is read when you ask for frames (`FrameReader`, `preview`, `check-video`).
   A dataset from someone else can name any path on your machine as a video source; the worst effect is that `ffprobe` or OpenCV is
   asked to open that file. Do not run preview or training on a dataset whose video paths you have not looked at (they are in

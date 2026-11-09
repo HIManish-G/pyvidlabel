@@ -62,8 +62,8 @@ in the metadata) and handles them safely, but a frame *index* in such a video is
 
 OpenCV's own seek is wrong on these files, so without a frame index vidlabel never seeks in them and random access is slow
 (`VideoStream`, which reads front to back, is unaffected). **With a frame index it seeks correctly**: run
-`vidlabel index my_dataset` (videos registered with an older version have none). Re-encoding to a constant frame rate is no longer
-needed, and if you do it, **re-register the video and check that your annotations still line up**, because frame indices change.
+`vidlabel index my_dataset` (videos registered with an older version have none). Re-encoding to a constant frame rate is not
+required; if you do it, **re-register the video and check that your annotations still line up**, because frame indices change.
 
 ## Reading frames
 

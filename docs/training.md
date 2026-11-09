@@ -294,7 +294,7 @@ spacing and the average decode cost per random frame, and prints the fix when it
    decodes exactly the frames a run will use, in order and at full speed, and saves them as JPEG (about 88 KB each at 720p)
    or PNG (`--format png`, exact pixels, about 175 KB). Then `FrameSamples(ds, cache="/fast/disk/frames")` reads them as image
    files, and anything not cached falls back to the video. Building runs at about 50 (JPEG) or 25 (PNG) frames per second
-   in our test. The cache is *derived* data: it lives outside the dataset, can be deleted and rebuilt any time, records the
+   in the benchmark. The cache is *derived* data: it lives outside the dataset, can be deleted and rebuilt any time, records the
    content hash of each video and is ignored for a video whose file changed, and holds whole frames so one cache serves every view.
    JPEG is lossy: pixels differ slightly from decoding the video.
 2. **Re-encode with more keyframes** (`-g 30`, shown by `check-video`): about 8 times less decoding per random frame, at the

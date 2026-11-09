@@ -64,7 +64,7 @@ centre-and-size.
 
 *Why:* the picture a person sees in a player is the one they label, and it is what every reader of the data wants. Storing
 the stored-frame size and a clockwise `rotation` keeps both facts, and the readers apply rotation exactly once. ffprobe
-reports the display matrix counter-clockwise, so it is negated on the way in; a test checks that our rotation equals
+reports the display matrix counter-clockwise, so it is negated on the way in; a test checks that vidlabel's rotation equals
 OpenCV's own auto-rotation for 90, 180 and 270. A rotation that is not a multiple of 90 cannot be represented: it is
 recorded in `extra["unsupported_rotation_degrees"]` and treated as 0, not silently dropped.
 
@@ -107,7 +107,7 @@ one used elsewhere, which is a reproducibility problem of its own.
 
 ## A frame index, not stored patches
 
-Random access is slow because of how video is compressed, not because we cannot find the keyframe: finding it takes almost
+Random access is slow because of how video is compressed, not because the keyframe cannot be found: finding it takes almost
 nothing, decoding up to the frame takes ~125 frames on average at a keyframe interval of 250. Two ideas that look like they
 should help do not:
 
@@ -175,10 +175,10 @@ half-written file. A real multi-writer story (locks, or merging) is not designed
   examples of common choices (class balance, weights) could be added to the docs; nothing about them is built into the library.
 - **The loader at scale.** Many videos, hour-long videos, many GPUs and remote storage are untested.
 - **Variable-frame-rate video in real datasets.** With a frame index it can be seeked and every frame is checked; tested on a synthetic variable-rate
-  H.264 file only. The index relies on OpenCV reporting each frame's timestamp, which held for H.264 in MP4 in our tests; other codecs and
+  H.264 file only. The index relies on OpenCV reporting each frame's timestamp, which held for H.264 in MP4 in the tests; other codecs and
   containers are unmeasured (a mismatch falls back to sequential decoding with a warning, never to a wrong frame).
 - **Frame cache at scale.** Measured on a few hundred frames of one clip. Build time, disk use and read speed on millions of frames or network storage are unknown.
 - **Temporal mask coding and the arithmetic codec.** Deferred; see the caveats above.
-- **Name and publishing.** "vidlabel" is a working name and nothing is on PyPI yet.
-- **Spec strictness over time.** The track rules added in 0.5.0 make `validate` stricter than before (a duplicate track in
-  a frame is now an error). Datasets written by earlier versions that contain such duplicates need fixing.
+- **Publishing.** Nothing is on PyPI yet; the package is installed from a source checkout.
+- **Spec strictness over time.** The track rules added in 0.5.0 make `validate` stricter than 0.4 (a duplicate track in
+  a frame is an error). Datasets written before 0.5.0 that contain such duplicates must be corrected.

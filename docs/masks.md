@@ -27,7 +27,7 @@ Crop the mask to its bounding box, pack each row of the crop into bits (`np.pack
 A small header records the full frame size and where the crop sits, so `decode` rebuilds the full-frame array. It is
 **lossless**, and an empty mask is just the header. The byte layout is in the [spec](SPEC.md#mask-codec-bitpack_zstd).
 
-Why this and not COCO run-length encoding, which most tools use? On the data we measured (real masks from SA-V, plus
+Why this and not COCO run-length encoding, which most tools use? On the data measured (real masks from SA-V, plus
 DAVIS-sequence predictions), crop + bit-pack + zstd was **16 to 36 percent smaller than COCO RLE and decoded about 6 times
 faster**. Decoding, not size, is what costs CPU time during training. A context-modelled arithmetic coder was about 4
 times smaller than COCO RLE but slower to decode, so it is left as a possible future *archival* codec;

@@ -1,4 +1,4 @@
-# vidlabel (working name)
+# vidlabel
 
 An open, directory-based format and Python library for **video annotation data**: time markers and spans, bounding
 boxes, masks, tracks and labels, all in one annotation table. *Who made a row* (a person, a model, an imported file) is
@@ -45,14 +45,14 @@ Optional extras: `pip install -e "packages/vidlabel[video]"` (OpenCV: previews, 
 - **One table for everything.** Markers, boxes, masks and tracks share columns; `origin`, `tool` and `author` say who made them.
 - **Views.** Several crops of one video, each processed by its own pipeline, stored in one set of full-frame coordinates.
 - **Validation.** Strict models and over fifty documented checks; writes are all-or-nothing and `build` refuses invalid data.
-- **Masks** stored losslessly (crop, bit-pack, zstd): smaller and about 6 times faster to decode than COCO RLE in our measurements.
+- **Masks** stored losslessly (crop, bit-pack, zstd): smaller and about 6 times faster to decode than COCO RLE in the project's benchmarks (see [masks](docs/masks.md)).
 - **Releases.** `vidlabel build` makes a sorted table whose id is a hash of its contents, with a label snapshot, so a run can be reproduced exactly.
 - **Check against the real video.** `vidlabel check-video` and `vidlabel preview` (OpenCV) draw annotations on actual frames.
 - **For AI agents.** `vidlabel mcp` lets an agent read a dataset and propose boxes, spans and masks over MCP; they wait as unreviewed proposals until a person takes them in and commits. Every read command also prints JSON (`--json`). See [AI agents](docs/agents.md).
 - **Web interface.** `pip install "vidlabel[ui]"` then `vidlabel ui my_dataset`: browse, review tracks, validate, build releases, draw boxes, spans and masks, add videos, manage labels and views, and revert changes without the command line.
 - **Training.** A framework-free sample builder and PyTorch datasets (streaming and map-style), including crops and box formats.
 - **Fast, exact frame access.** A per-video frame index makes seeking safe (even in variable-frame-rate video) and plans reads by keyframe; an optional frame cache turns random access into a file read.
-- **Built for Linux, Windows and macOS.** The test suite runs in CI on Linux, Windows and macOS (with and without DataLoader workers); it has not been tried by hand on Windows or macOS beyond that.
+- **Built for Linux, Windows and macOS.** The test suite runs in CI on Linux, Windows and macOS (with and without DataLoader workers). Windows and macOS are covered by CI only.
 
 ## Documentation
 
@@ -73,7 +73,7 @@ Start at **[docs/index.md](docs/index.md)**.
 
 ## Status
 
-Version 0.6.0, pre-release; the name is provisional and nothing is on PyPI yet. Tested: spec and validator, reading and
+Version 0.6.0, pre-release; nothing is on PyPI yet. Tested: spec and validator, reading and
 writing, views, masks, releases, the command line, frame reading and previews on real H.264 video, and the PyTorch loader.
 **Not yet verified:** Parquet against other storage at scale, several people editing one video at once, the loader on very
 large datasets or many GPUs, variable-frame-rate video in real datasets. There are **no importers or exporters** for other

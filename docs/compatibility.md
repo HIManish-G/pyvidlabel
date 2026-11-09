@@ -36,9 +36,9 @@ Datasets are not rewritten by upgrading. Only a write (adding annotations, editi
 | platform | status |
 |---|---|
 | Linux, Python 3.10 to 3.13 | the test suite is run here and passes |
-| Windows, macOS | the CI workflow runs the test suite on them (Python 3.12) and it passes; nobody has used them by hand yet; the code avoids platform-specific behaviour (explicit UTF-8, `pathlib`, process start methods tested with `fork` and `spawn`) |
+| Windows, macOS | the CI workflow runs the test suite on them (Python 3.12) and it passes; they have not been exercised by hand; the code avoids platform-specific behaviour (explicit UTF-8, `pathlib`, process start methods tested with `fork` and `spawn`) |
 
-If you try it on Windows or macOS, please report results: real-world use there is the largest unverified area.
+Real-world use on Windows and macOS is the largest unverified area.
 
 ## External requirements and tested versions
 
