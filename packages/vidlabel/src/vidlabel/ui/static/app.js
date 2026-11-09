@@ -73,14 +73,18 @@ function modal(title, body, buttons) {
   const before = document.activeElement;
   let dismiss = () => {};
   const back = h("div", { class: "modal-back", onclick: e => { if (e.target === back) dismiss(); } });
-  const close = () => { back.remove(); if (before && before.isConnected && before.focus) before.focus(); };       // focus goes back to where it was
+  const close = () => { document.removeEventListener("keydown", onEsc, true); back.remove(); if (before && before.isConnected && before.focus) before.focus(); };       // focus goes back to where it was
   const heading = h("h2", { id: "modal-title-" + Math.random().toString(36).slice(2) }, title);
   const btns = (buttons || []).map(b => h("button", { class: b.primary ? "primary" : "", onclick: async () => { if ((await b.run?.(close)) !== false && !b.stay) close(); } }, b.text));
   const dialog = h("div", { class: "modal", role: "dialog", "aria-modal": "true", "aria-labelledby": heading.id }, heading, body, h("div", { class: "row", style: "margin-top:14px;justify-content:flex-end" }, btns));
   const cancelIdx = (buttons || []).findIndex(b => b.cancel);
   dismiss = () => { if (cancelIdx >= 0) btns[cancelIdx].click(); else close(); };                                  // Escape and a click outside mean "cancel"
+  const onEsc = e => {                                                                                             // Escape works even before focus has reached the dialog
+    const top = $("#modal-root").lastElementChild;
+    if (e.key === "Escape" && top === back) { e.stopPropagation(); e.preventDefault(); dismiss(); }
+  };
+  document.addEventListener("keydown", onEsc, true);
   dialog.addEventListener("keydown", e => {
-    if (e.key === "Escape") { e.stopPropagation(); e.preventDefault(); dismiss(); return; }
     if (e.key !== "Tab") return;                                                                                   // keep Tab inside the dialog
     const f = [...dialog.querySelectorAll("button, input, select, textarea, a[href], [tabindex]:not([tabindex='-1'])")].filter(x => !x.disabled && x.offsetParent !== null);
     if (!f.length) return;
@@ -89,7 +93,7 @@ function modal(title, body, buttons) {
   });
   back.append(dialog);
   $("#modal-root").append(back);
-  setTimeout(() => { const t = dialog.querySelector("input, select, textarea") || btns[btns.length - 1]; if (t && !dialog.contains(document.activeElement)) t.focus(); }, 0);
+  { const t = dialog.querySelector("input, select, textarea") || btns[btns.length - 1]; if (t) t.focus(); }
   return close;
 }
 function confirmBox(title, text) {
